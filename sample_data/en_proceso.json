@@ -1,0 +1,12 @@
+[
+  {
+    "spf": "SPF-1458", "cliente": "BLUE RIDGE ENERGY", "oc_numero": "PO-55123",
+    "vendedor": "Luca Moretti", "fecha_entrega": "45 DIAS", "origen": "Ariana",
+    "oc_ariana": "OC-1062"
+  },
+  {
+    "spf": "SPF-1459", "cliente": "SUMMIT MINING", "oc_numero": "4500098231",
+    "vendedor": "Nils Becker", "fecha_entrega": "23/10/26", "origen": "Ariana",
+    "oc_ariana": "OC-1065"
+  }
+]

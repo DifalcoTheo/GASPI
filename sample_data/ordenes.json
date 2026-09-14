@@ -1,0 +1,63 @@
+[
+  {
+    "lote": "SPF-1401", "cliente": "NORTHWIND BREWING", "vendedor": "Alex Rivera",
+    "fecha_oc": "2026-06-02", "fecha_entrega": "2026-07-17",
+    "lineas": [
+      {"codigo": "SP1024", "cantidad": 12, "estado": "finalizada"},
+      {"codigo": "SP1150", "cantidad": 8, "estado": "finalizada"}
+    ]
+  },
+  {
+    "lote": "SPF-1402", "cliente": "CASCADE POWER", "vendedor": "Sam Carter",
+    "fecha_oc": "2026-06-10", "fecha_entrega": "2026-07-25",
+    "lineas": [
+      {"codigo": "SP1673", "cantidad": 6, "estado": "finalizada"}
+    ]
+  },
+  {
+    "lote": "SPF-1418", "cliente": "DELTA CHEMICALS", "vendedor": "Diego Torres",
+    "fecha_oc": "2026-07-01", "fecha_entrega": "2026-08-15",
+    "lineas": [
+      {"codigo": "SP2022", "cantidad": 4, "estado": "en_produccion"},
+      {"codigo": "SP2678", "cantidad": 2, "estado": "pendiente"}
+    ]
+  },
+  {
+    "lote": "SPF-1425", "cliente": "MERIDIAN DAIRY", "vendedor": "Luca Moretti",
+    "fecha_oc": "2026-07-14", "fecha_entrega": "2026-08-28",
+    "lineas": [
+      {"codigo": "SP1227", "cantidad": 20, "estado": "en_produccion"},
+      {"codigo": "SP2500", "cantidad": 15, "estado": "en_produccion"}
+    ]
+  },
+  {
+    "lote": "SPF-1433", "cliente": "AURORA PHARMA", "vendedor": "Nils Becker",
+    "fecha_oc": "2026-07-28", "fecha_entrega": "2026-09-11",
+    "lineas": [
+      {"codigo": "SP1449", "cantidad": 10, "estado": "pausada"}
+    ]
+  },
+  {
+    "lote": "SPF-1440", "cliente": "VULCAN STEEL", "vendedor": "Diego Torres",
+    "fecha_oc": "2026-08-05", "fecha_entrega": "2026-09-19",
+    "lineas": [
+      {"codigo": "SP1767", "cantidad": 6, "estado": "pendiente"},
+      {"codigo": "SP2833", "cantidad": 9, "estado": "pendiente"}
+    ]
+  },
+  {
+    "lote": "SPF-1447", "cliente": "TITAN CEMENT", "vendedor": "Alex Rivera",
+    "fecha_oc": "2026-08-18", "fecha_entrega": "2026-10-02",
+    "lineas": [
+      {"codigo": "SP2737", "cantidad": 14, "estado": "pendiente"},
+      {"codigo": "SP1949", "cantidad": 7, "estado": "pendiente"}
+    ]
+  },
+  {
+    "lote": "SPF-1451", "cliente": "HARBOR FOODS", "vendedor": "Sam Carter",
+    "fecha_oc": "2026-08-26", "fecha_entrega": "2026-10-10",
+    "lineas": [
+      {"codigo": "SP1024", "cantidad": 18, "estado": "pendiente"}
+    ]
+  }
+]

@@ -1,0 +1,576 @@
+# =============================================================================
+#  SISTEMA DE ORDENES DE FABRICACION  -  ARCHIVO DE REGLAS
+# =============================================================================
+#
+#  Este archivo NO es documentacion: es lo que el sistema ejecuta.
+#  Si aca dice 20, el sistema calcula 20. Si lo cambias a 25, calcula 25.
+#  No hay ningun otro lugar donde esten escritas estas reglas.
+#
+#  COMO EDITARLO
+#    - Se abre con el Bloc de notas. Es texto comun.
+#    - Respetar los espacios del principio de cada linea (la sangria importa).
+#    - Todo lo que empieza con # es un comentario y el sistema lo ignora.
+#    - Los decimales van con PUNTO (0.5), no con coma.
+#
+#  IMPORTANTE
+#    Al cambiar algo, subir "version" y poner la fecha.
+#    Cada OF guarda con que version de reglas se calculo, asi una OF vieja
+#    siempre se puede volver a explicar con las reglas que regian ese dia.
+#
+# =============================================================================
+
+version: 4
+vigente_desde: 2026-08-19
+alcance: cartuchos          # canastos, conos y el resto se agregan mas adelante
+
+
+# =============================================================================
+#  1. PARAMETROS
+#  Numeros sueltos con nombre. Se usan en las formulas de mas abajo.
+#  Cambiar un numero aca lo cambia en todas las formulas que lo usan.
+# =============================================================================
+
+parametros:
+
+  # Solapa para las piezas que se cierran solapadas. Total, no por vuelta.
+  solapa_mm: 20
+
+  # Por debajo de este espesor la chapa se cierra SOLAPADA (lleva solapa).
+  # De este espesor en adelante se cierra A TOPE (no lleva solapa).
+  espesor_limite_solapa_mm: 1
+
+  # El metal desplegado se especifica en kg/m2, no en mm.
+  # Este es el espesor equivalente que se usa para calcular el desarrollo.
+  espesor_desplegado_mm: 0.5
+
+  # Espesor de toda la chapa espiralada (perforada y ranurada).
+  espesor_espiralado_mm: 0.5
+
+  # Cuanto mas bajas van las estructuras (nucleo, nucleo intermedio y jaula)
+  # respecto de la altura del filtro. Depende del tipo de tapa.
+  # Esta es la altura de la estructura MAS ALTA (la principal).
+  descuento_altura_tapa_mecanizada_mm: 3
+  descuento_altura_tapa_repujada_mm: 2
+  descuento_altura_tapa_otra_mm: 2
+
+  # Cuanto mas baja va cada estructura que NO es la principal, respecto de la
+  # principal. La mas alta lleva la altura de arriba; las demas, esto menos.
+  descuento_estructura_no_principal_mm: 1
+
+  # Medio ROLADO sobre una estructura ROLADA: el diametro sobre el que se calcula
+  # el desarrollo es el Ø INTERNO de esa estructura mas este valor.
+  # Desarrollo = PI * (Ø interno estructura + esto) * vueltas + solapa.
+  sobreespesor_medio_rolado_mm: 2.5
+
+  # Medio ROLADO sobre una estructura ESPIRALADA: la espiralada no tiene Ø interno
+  # cargado, su diametro sale del MOLDE. Ø externo del espiralado = molde + 2 * este
+  # espesor. Con 2 mm da molde + 4, que es la tabla molde->externo de nucleos y jaula.
+  # Ese Ø externo es el que se usa para el desarrollo del rolado que va encima.
+  espesor_espiralado_rolado_mm: 2
+
+  # Optimizador de corte: separacion entre pieza y pieza (ancho de guillotina
+  # + margen). Ingenieria definio 0: la guillotina no resta material aunque en
+  # la realidad algo se lleve. Si algun dia se quiere contemplar, se pone aca.
+  separacion_corte_mm: 0
+
+
+# =============================================================================
+#  1b. ALTURA DE CADA ESTRUCTURA  (cual es la mas alta)
+#
+#  La estructura MAS ALTA lleva la altura calculada (altura del filtro menos el
+#  descuento por tapa); las demas, 1 mm menos (descuento_estructura_no_principal_mm).
+#  Cual es la mas alta se decide asi:
+#
+#    - Solo roladas, mismo espesor:     la mas importante (NI > JA > NU).
+#    - Solo roladas, distinto espesor:  la de MAYOR espesor (empate -> NI > JA > NU).
+#    - Roladas + espiraladas:           una rolada (nunca una espiralada); entre
+#                                       las roladas, la de mayor espesor, y si
+#                                       empatan, la mas importante (NI > JA > NU).
+#    - Solo espiraladas:                la mas importante (NI > JA > NU).
+#    - Metal desplegado:                nunca es la mas alta, este donde este;
+#                                       salvo que TODAS sean desplegado, y ahi
+#                                       vale NI > JA > NU.
+#
+#  "Rolada" = cualquier estructura que no sea espiralada.
+#  Orden de importancia para desempatar (de mas a menos importante):
+orden_importancia_estructuras: [nucleo_int, jaula, nucleo]
+
+
+# =============================================================================
+#  3b. CHAPAS ESTANDAR
+#  Las medidas de chapa que se compran habitualmente, para el optimizador de
+#  corte. Se pueden elegir de esta lista o cargar una a mano (ej. un recorte).
+#  Agregar o quitar medidas es editar esta lista.
+# =============================================================================
+
+chapas_estandar:
+  - {nombre: "1000 x 2000", ancho: 1000, alto: 2000}
+  - {nombre: "1220 x 2440", ancho: 1220, alto: 2440}
+  - {nombre: "1250 x 2500", ancho: 1250, alto: 2500}
+  - {nombre: "1500 x 3000", ancho: 1500, alto: 3000}
+
+
+# =============================================================================
+#  2. FORMULAS
+#
+#  Notacion:  Oi   = diametro interno
+#             Oext = diametro externo
+#             esp  = espesor de la chapa
+#             Q    = cantidad de pliegues
+#             Hp   = altura de pliegue
+# =============================================================================
+
+formulas:
+
+  # --- NUCLEO / JAULA (chapa perforada, ranurada o desplegada) --------------
+
+  desarrollo_chapa_rolada_solapada:
+    cuando: "rolada y esp < espesor_limite_solapa_mm"
+    formula: "(Oi + esp) * PI + solapa_mm"
+
+  desarrollo_chapa_rolada_a_tope:
+    cuando: "rolada y esp >= espesor_limite_solapa_mm"
+    formula: "(Oi + esp) * PI"
+
+  desarrollo_desplegado_rolado:
+    cuando: "metal desplegado, rolado"
+    formula: "(Oi + espesor_desplegado_mm) * PI + solapa_mm"
+
+  desarrollo_chapa_espiralada:
+    cuando: "espiralada (perforada, ranurada o desplegada)"
+    fuente: tabla      # no se calcula: sale de las tablas de molde (seccion 3)
+
+  # --- MEDIO FILTRANTE ------------------------------------------------------
+
+  desarrollo_medio_plisado:
+    formula: "Q * Hp * 2 + Q"
+    # Sin solapa. El "+ Q" es el agregado por pliegue.
+
+  desarrollo_medio_rolado:
+    formula: "PI * Oext * vueltas + solapa_mm"
+    # Oext = diametro sobre el que se enrolla, segun la estructura elegida ("rolado sobre"):
+    #   - estructura ROLADA:     Ø interno + sobreespesor_medio_rolado_mm
+    #   - estructura ESPIRALADA: Ø externo del molde (ver diametro_externo_espiralado)
+    # La solapa se suma UNA sola vez, no por vuelta.
+
+  diametro_externo_espiralado:
+    formula: "molde + 2 * espesor_espiralado_rolado_mm"
+    # Ø externo de un nucleo/jaula ESPIRALADO a partir del molde. Con espesor 2 mm
+    # da molde + 4, que es la tabla molde->externo (Tabla_nucleos_Jaula).
+    #
+    # NOTA (acordado con Ingenieria): esta formula toma todas las vueltas
+    # sobre el mismo diametro, cuando en realidad cada vuelta va sobre la
+    # anterior y es un poco mas larga. La diferencia se acepta a proposito
+    # porque este valor se usa como CONSUMO ESTIMADO, no para cortar.
+
+  # --- ALTURA DE LAS ESTRUCTURAS -------------------------------------------
+
+  altura_estructuras:
+    cuando: "altura del nucleo, del nucleo intermedio y de la jaula"
+    formula: "altura - descuento"
+    # El descuento sale del tipo de tapa (ver parametros):
+    #   tapa mecanizada -> 3 mm     tapa repujada -> 2 mm
+    #   tapa no reconocida u otra -> 2 mm
+    # Las tres estructuras llevan la misma altura.
+
+  # --- CONSUMO DE MATERIAL --------------------------------------------------
+
+  consumo_chapa_espiralada:
+    formula: "peso_por_metro * (altura_mm / 1000)"
+    # peso_por_metro sale de las tablas de la seccion 3, columna segun material
+    # (ver sinonimos de material en la seccion 4). Resultado en gramos.
+
+
+# =============================================================================
+#  3. TABLAS DE MOLDE
+#
+#  Estas tablas describen los moldes que HAY en planta. No son una formula.
+#  (Hoy el diametro externo da siempre molde+3 en perforado y molde+4 en
+#  ranurado, pero eso describe los moldes existentes, no una ley: si manana
+#  entra un molde que no sigue el patron, se agrega la fila y listo.)
+#
+#  Un diametro que no este en la tabla NO SE PUEDE FABRICAR espiralado.
+#
+#  Orden de las columnas:
+#    [ diam_molde , diam_externo , peso_x_metro_galvanizada_g , peso_x_metro_hojalata_g ]
+#  Espesor de chapa: siempre 0.5 mm (ver parametros).
+# =============================================================================
+
+tablas_molde:
+
+  # NOTA (portfolio): los pesos por metro de estas tablas son el know-how de
+  # planta y fueron reemplazados por VALORES FICTICIOS derivados de la geometria.
+  # La estructura y el mecanismo son los reales; los numeros de peso, no.
+  espiralado_perforado:
+    en_el_plano_dice: "perforado espiralado"
+    espesor_mm: 0.5
+    filas:
+      - [  32,   35,   455,   388]
+      - [  37,   40,   520,   444]
+      - [  42,   45,   585,   500]
+      - [  47,   50,   650,   555]
+      - [  49,   52,   676,   577]
+      - [  54,   57,   741,   633]
+      - [  58,   61,   793,   677]
+      - [  65,   68,   884,   755]
+      - [  72,   75,   975,   832]
+      - [  77,   80,  1040,   888]
+      - [  82,   85,  1105,   944]
+      - [  85,   88,  1144,   977]
+      - [  90,   93,  1209,  1032]
+      - [  97,  100,  1300,  1110]
+      - [ 105,  108,  1404,  1199]
+      - [ 111,  114,  1482,  1265]
+      - [ 117,  120,  1560,  1332]
+      - [ 127,  130,  1690,  1443]
+      - [ 137,  140,  1820,  1554]
+      - [ 147,  150,  1950,  1665]
+      - [ 157,  160,  2080,  1776]
+      - [ 167,  170,  2210,  1887]
+      - [ 177,  180,  2340,  1998]
+      - [ 187,  190,  2470,  2109]
+
+  espiralado_ranurado:
+    en_el_plano_dice: "ranurado espiralado"
+    espesor_mm: 0.5
+    filas:
+      - [  32,   36,   482,   410]
+      - [  37,   41,   549,   467]
+      - [  42,   46,   616,   524]
+      - [  47,   51,   683,   581]
+      - [  49,   53,   710,   604]
+      - [  54,   58,   777,   661]
+      - [  58,   62,   831,   707]
+      - [  65,   69,   925,   787]
+      - [  72,   76,  1018,   866]
+      - [  77,   81,  1085,   923]
+      - [  82,   86,  1152,   980]
+      - [  85,   89,  1193,  1015]
+      - [  90,   94,  1260,  1072]
+      - [  97,  101,  1353,  1151]
+      - [ 105,  109,  1461,  1243]
+      - [ 111,  115,  1541,  1311]
+      - [ 117,  121,  1621,  1379]
+      - [ 127,  131,  1755,  1493]
+      - [ 137,  141,  1889,  1607]
+      - [ 147,  151,  2023,  1721]
+      - [ 157,  161,  2157,  1835]
+      - [ 167,  171,  2291,  1949]
+      - [ 177,  181,  2425,  2063]
+      - [ 187,  191,  2559,  2177]
+
+  espiralado_desplegado:
+    en_el_plano_dice: "metal desplegado espiralado"
+    # OJO: aca el valor de la lista es el diametro INTERNO, no el externo.
+    # El molde se regula a mano, pero SOLO a estos 15 diametros.
+    diametros_internos: [130, 150, 160, 180, 190, 200, 210, 220, 230, 240,
+                         260, 280, 300, 320, 350]
+
+
+# =============================================================================
+#  4. SINONIMOS
+#
+#  Distintas formas de escribir lo mismo en los planos.
+#  Cuando aparezca una forma nueva, agregarla aca (una linea) en vez de
+#  pedir un cambio en el programa.
+#  No distingue mayusculas ni acentos.
+# =============================================================================
+
+sinonimos:
+
+  # --- Material: define que columna de peso se usa en las tablas de molde ---
+  material:
+    galvanizada:
+      - galvanizado
+      - galvanizada
+      - electrocincado
+      - electrocincada
+      - cincado
+      - cincada
+    hojalata:
+      - hojalata
+
+  # --- Tipo de chapa --------------------------------------------------------
+  tipo_chapa:
+    perforado:
+      - perforado
+      - perforada
+      - chapa perforada
+    ranurado:
+      - ranurado
+      - ranurada
+    desplegado:
+      - metal desplegado
+      - desplegado
+      - desplegada
+
+  # --- Como se conforma -----------------------------------------------------
+  conformado:
+    espiralado:
+      - espiralado
+      - espiralada
+    rolado:
+      - rolado
+      - rolada
+
+  # --- Tipo de tapa: define cuanto se le descuenta a las estructuras --------
+  tipo_tapa:
+    mecanizada:
+      - mecanizada
+      - mecanizado
+      - torneada
+    repujada:
+      - repujada
+      - repujado
+      - repujadas
+
+  # --- Tipo de medio filtrante ----------------------------------------------
+  tipo_medio:
+    plisado:
+      - plisado
+      - plisada
+    rolado:
+      - rolado
+      - rolada
+
+
+# =============================================================================
+#  4b. MEDIOS FILTRANTES
+#
+#  De "Medios filtrante OF.xlsx". Sirve para dos cosas:
+#    1) que el lector reconozca el medio en el texto del plano;
+#    2) avisar cuando el plano pide una forma que ese medio no admite,
+#       o cuando le falta el dato que siempre lo tiene que acompanar.
+#
+#  El TEXTO del medio se copia SIEMPRE exacto del plano. Esta lista no lo
+#  limita ni lo reemplaza: solo sirve para reconocerlo y para avisar.
+#
+#  debe_indicar:
+#    micronaje  -> tiene que venir con el micronaje (15 um, 10u, 3 micrones)
+#    aplicacion -> tiene que decir para que es (aire, fluidos, gases)
+#    malla      -> tiene que venir con el N° de malla o con REPS
+# =============================================================================
+
+medios_filtrantes:
+
+  - nombre: Microfibra de borosilicato
+    formas: [rolado, plisado]
+    debe_indicar: micronaje
+    se_escribe: [microfibra de borosilicato, borosilicato, microfibra]
+
+  - nombre: Papel celulosico
+    formas: [rolado, plisado]
+    debe_indicar: aplicacion
+    se_escribe: [papel celulosico, celulosico, papel celulosico para]
+
+  - nombre: Velo de vidrio
+    formas: [rolado]        # corregido por Ingenieria: va rolado, no plisado
+    se_escribe: [velo de vidrio]
+
+  - nombre: Guata
+    formas: [rolado]
+    se_escribe: [guata]
+
+  - nombre: Punzonado 350gr/m2
+    formas: [rolado]
+    se_escribe: [punzonado]
+
+  - nombre: Papel polyester 80/20
+    formas: [rolado, plisado]
+    se_escribe: [papel polyester 80/20, polyester 80/20]
+
+  - nombre: Papel polyester 100%
+    formas: [rolado, plisado]
+    se_escribe: [papel polyester 100, polyester 100]
+
+  - nombre: Bolsa de carbon activado
+    formas: [otro]
+    se_escribe: [carbon activado, bolsa de carbon]
+
+  - nombre: Mesh
+    formas: [rolado, plisado]
+    debe_indicar: malla
+    se_escribe: [mesh]
+
+  - nombre: Tubo de fibra de vidrio
+    formas: [otro]
+    se_escribe: [tubo de fibra de vidrio]
+
+  - nombre: Aramida 80/20
+    formas: [rolado]
+    se_escribe: [aramida]
+
+  - nombre: Fibra de vidrio impregnada en teflon
+    formas: [otro]
+    se_escribe: [fibra de vidrio impregnada, fibra de vidrio con teflon,
+                 papel de teflon]
+
+# Como se reconoce cada dato que tiene que acompanar al medio.
+# Si aparece una forma nueva de escribirlo, se agrega aca.
+acompanamiento:
+  micronaje:  ['\d+\s*(?:µ|u|micr)', '\d+\s*um\b']
+  aplicacion: [aire, fluidos, gases, liquidos, vapor]
+  malla:      ['mesh\s*n?°?\s*\d+', '\breps\b', '\d+\s*x\s*\d+']
+
+
+# =============================================================================
+#  5. VALIDACIONES
+#
+#  nivel: avisa   -> muestra un cartel pero deja guardar
+#         bloquea -> no deja guardar hasta corregir
+#
+#  Durante la prueba conviene dejar TODO en "avisa", y recien ir pasando a
+#  "bloquea" lo que ya se sabe que esta bien.
+#
+#  Las que tienen "expresion" se pueden editar desde aca y el cambio se aplica
+#  solo (igual que las formulas). Las que tienen solo "condicion" son
+#  estructurales y su logica vive en el programa; aca se puede cambiar el
+#  nivel y el mensaje, pero no la condicion.
+# =============================================================================
+
+validaciones:
+
+  - id: molde_inexistente
+    condicion: "es espiralado y el diametro no esta en la tabla de molde"
+    nivel: avisa
+    mensaje: "No existe molde para ese diametro. Ver tabla de moldes."
+
+  - id: paso_de_plegado
+    condicion: "el paso entre pliegues es menor a 2 veces el espesor del medio"
+    expresion: "PI * ID / Q < 2 * espesor_medio"
+    nivel: avisa
+    mensaje: "El paso de plegado puede ser inviable: demasiados pliegues para ese diametro interno."
+
+  - id: altura_de_pliegue
+    condicion: "el pliegue es mas alto que el espacio entre diametros"
+    expresion: "Hp > (OD - ID) / 2"
+    nivel: avisa
+    mensaje: "El pliegue es mas alto que el espacio disponible entre diametros."
+
+  - id: diametros_coherentes
+    condicion: "el diametro externo no es mayor que el interno"
+    expresion: "OD <= ID"
+    nivel: bloquea
+    mensaje: "El diametro externo debe ser mayor que el interno."
+
+  - id: codigo_no_coincide
+    condicion: "el codigo leido del plano != el codigo del nombre de la carpeta"
+    nivel: avisa
+    mensaje: "El codigo del plano no coincide con el de la carpeta. Verificar cual es el correcto."
+    # Esta validacion sola habria evitado los 27 casos mal cargados que
+    # aparecieron en cartuchos.db (SP1398H guardado donde iba SP2022, etc).
+
+  - id: difiere_del_historico
+    condicion: "el SP ya se fabrico antes y algun valor difiere"
+    nivel: avisa
+    mensaje: "Este codigo ya se fabrico con otros valores. Revisar si es un cambio de revision o un error."
+
+  - id: medio_forma_no_admitida
+    condicion: "el plano pide una forma que ese medio no admite (ver medios_filtrantes)"
+    nivel: avisa
+    mensaje: "Ese medio filtrante no figura como apto para esa forma. Verificar."
+
+  - id: medio_incompleto
+    condicion: "al medio le falta el dato que siempre lo acompana (ver debe_indicar)"
+    nivel: avisa
+    mensaje: "Al medio filtrante le falta el dato que lo tiene que acompanar."
+
+  - id: molde_no_coincide_con_cota
+    condicion: "el molde que dice la nota y el Ø interno acotado difieren en mas de 3 mm"
+    nivel: avisa
+    mensaje: "El molde de la nota y el Ø interno acotado no coinciden."
+
+
+# =============================================================================
+#  6. TOLERANCIAS Y CRITERIOS
+#
+#  Confirmado con Ingenieria: no cambian nunca.
+#  Por eso NO son campos que se completan en cada OF: salen de aca.
+#  Pendiente de reconfirmar mas adelante.
+# =============================================================================
+
+tolerancias:
+  nucleo: "+/- 1 mm"
+  jaula: "+/- 1 mm"
+  nucleo_intermedio: "+/- 1 mm"
+  altura_final: "+/- 1 mm"
+  paralelismo: "1 mm"
+  diametro_ext_tapa: "+/- 0.5 mm"
+  diametro_int_tapa: "+/- 0.5 mm"
+  diametro_ext_filtro: "+/- 0.1 mm"
+  diametro_int_filtro: "+ 0.1 mm"
+
+criterios_de_aceptacion:
+  - "Limpieza: no debe haber pegamento en los laterales"
+  - "Adhesivo: el poliuretanico debe ser uniforme"
+  - "Medio filtrante 1: igual cantidad de pliegues en todos"
+  - "Medio filtrante 2: distribucion uniforme de los pliegues"
+  - "Medio filtrante 3: el medio filtrante no debe estar danado"
+  - "Oring 1: no debe salirse facilmente del alojamiento"
+  - "Oring 2: debe oponerse al paso del probador (si hay)"
+
+
+# =============================================================================
+#  7. IDENTIDAD DE LA ORDEN
+#
+#  La identidad NO se lee del PDF: se lee del nombre de la carpeta, que es
+#  informacion escrita a proposito y no hay que adivinarla.
+#  Del PDF salen solo los datos tecnicos.
+# =============================================================================
+
+nomenclatura:
+  formato: "SPF-XXXX-A-CLIENTE-SPYYYY"
+  partes:
+    SPF-XXXX: "lote de fabricacion"
+    A: "numero de linea dentro del lote (1, 2, 3...). Un plano por linea."
+    CLIENTE: "cliente, o STOCK si es para stock"
+    SPYYYY: "codigo del producto"
+
+  # Los codigos con sufijo (SP1398H, SP2481-D, SP1179M, SP2506 V2) son
+  # variantes o modificaciones del codigo base: ficha propia, con un puntero
+  # al codigo del que derivan para poder clonarla.
+  sufijos_de_variante: true
+
+
+# =============================================================================
+#  8. LECTURA DEL PLANO
+# =============================================================================
+
+lectura_plano:
+
+  # Marca que tiene que aparecer en el plano para considerarlo normalizado.
+  # Sin esta marca, el plano es viejo: se lee lo que se pueda y todo queda
+  # marcado para que una persona lo confirme.
+  marca_normalizado: "FT-v1"
+
+  # Lo que sale de las cotas por geometria, sin que nadie escriba nada:
+  #   - texto de cota rotado ~90 grados  -> ALTURA
+  #   - de las cotas horizontales, la mayor -> OD, la menor -> ID
+  desde_cotas: [ALTURA, OD, ID]
+
+  # Lo unico que hay que declarar en el cuadro del plano normalizado:
+  cuadro_minimo:
+    - FORMATO           # SOE / SCE / DOE / DCE
+    - NUCLEO            # material | perforacion | espesor | Oi   (o "-")
+    - JAULA             # idem                                    (o "-")
+    - MEDIO             # medio filtrante y soporte, texto libre
+  # En los espiralados el Oi no hace falta: alcanza con el molde, que ya
+  # figura hoy en el plano ("Molde O77"), y sale de la tabla de la seccion 3.
+
+  # El texto libre se copia EXACTO del plano, nunca se interpreta
+  # ni se limita con una lista.
+  texto_libre: [MEDIO, SOPORTE, GRABADO, ETIQUETADO, OBSERVACIONES]
+
+
+# =============================================================================
+#  9. PENDIENTES
+#  Cosas decididas pero todavia no cerradas. Se resuelven mas adelante.
+# =============================================================================
+
+pendientes:
+  - "Reconfirmar que las tolerancias y criterios de aceptacion no cambian nunca."
+  - "Canastos: segunda familia a incorporar (fichas historicas ya migradas)."
+  - "Conos, discos, tapas y fondos: despues de canastos."
+  - "Cumplimiento de la norma de calidad interna: postergado hasta que el sistema funcione."
+  - "Impresion de la OF: por ahora no se imprime, solo se imprimen planos. No descartado."
+  - "Autocontroles digitales de produccion: fase posterior."

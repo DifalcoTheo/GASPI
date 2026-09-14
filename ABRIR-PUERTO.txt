@@ -1,0 +1,98 @@
+====================================================================
+  ABRIR EL PUERTO PARA QUE ENTREN DESDE OTRAS PC
+====================================================================
+
+Esto hay que hacerlo UNA SOLA VEZ, en la PC que corre el sistema.
+Son cambios en la seguridad de Windows, asi que los tenes que hacer vos:
+pedin permiso de administrador y yo no puedo ejecutarlos.
+
+
+--------------------------------------------------------------------
+  PASO 1 - Abrir el puerto 8000 en el Firewall
+--------------------------------------------------------------------
+
+  1. Menu Inicio -> escribir "powershell"
+  2. Click DERECHO sobre "Windows PowerShell"
+  3. "Ejecutar como administrador"  (va a pedir confirmacion)
+  4. Pegar esta linea y apretar Enter:
+
+
+New-NetFirewallRule -DisplayName "Ordenes de Fabricacion" -Direction Inbound -Protocol TCP -LocalPort 8000 -Action Allow -Profile Any
+
+
+  Si sale bien, muestra los datos de la regla creada.
+  El "-Profile Any" es importante: la red de la empresa esta marcada
+  como publica, y sin eso la regla no aplicaria justo en esa red.
+
+
+--------------------------------------------------------------------
+  PASO 2 (recomendado) - Marcar la red de la empresa como privada
+--------------------------------------------------------------------
+
+La red "Red Oficina" (192.168.0.x) figura como PUBLICA. Windows la trata
+como si fuera el wifi de un bar: bloquea casi todo. Como es la red
+interna de la empresa, corresponde marcarla como privada.
+
+En la misma ventana de PowerShell como administrador:
+
+
+Set-NetConnectionProfile -InterfaceAlias "Red Oficina" -NetworkCategory Private
+
+
+--------------------------------------------------------------------
+  COMO ENTRAN LAS OTRAS PC
+--------------------------------------------------------------------
+
+Desde cualquier navegador de la red:
+
+       http://192.168.0.XX:8000
+
+Esa direccion es la de ESTA PC en la red de la empresa. Si algun dia
+cambia, la ventana negra del sistema la muestra al arrancar.
+
+IMPORTANTE: esta PC tiene que estar prendida y con la ventana negra
+abierta. Si se cierra, nadie puede entrar.
+
+
+--------------------------------------------------------------------
+  SI LA DIRECCION CAMBIA SOLA
+--------------------------------------------------------------------
+
+La IP la asigna el router (DHCP) y puede cambiar al reiniciar. Para
+que sea siempre la misma hay dos caminos:
+
+  a) Pedirle al que administra el router que le fije la IP
+     192.168.0.XX a esta PC (reserva por DHCP). Es lo mas prolijo.
+
+  b) Ponerle IP fija a esta PC desde
+     Configuracion -> Red -> Cambiar opciones del adaptador.
+
+Mientras tanto, si un dia no entra, mira que direccion muestra la
+ventana negra al arrancar.
+
+
+--------------------------------------------------------------------
+  PARA PROBAR SI FUNCIONA
+--------------------------------------------------------------------
+
+Desde OTRA PC de la red, abrir el navegador en:
+
+       http://192.168.0.XX:8000
+
+  - Si carga: listo.
+  - Si dice "no se puede acceder": falta el Paso 1, o la ventana
+    negra no esta abierta en esta PC.
+  - Si tarda mucho y despues falla: es el firewall (Paso 1 y 2).
+
+
+--------------------------------------------------------------------
+  PARA CAMBIAR EL PUERTO
+--------------------------------------------------------------------
+
+Si el 8000 esta ocupado por otro programa, se puede usar otro. Antes
+de iniciar, en la ventana de comandos:
+
+       set PUERTO_OF=8080
+
+Y despues iniciar el sistema. Acordate de abrir ESE puerto en el
+firewall en vez del 8000.

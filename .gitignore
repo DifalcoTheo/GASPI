@@ -1,0 +1,33 @@
+# --- Generated / local runtime ---
+# (comments must be on their own line — git does not support inline comments)
+datos/sistema_of.db
+*.db
+
+# generated on first run (hashed credentials / session key)
+datos/usuarios_gaspi.json
+datos/secret.key
+
+# demo state rebuilt by seed_demo.py
+datos/en_proceso/
+
+# --- Real (non-demo) inputs — must never be committed ---
+datos/planos/
+cartuchos.db
+*.xlsx
+GASPI.url
+acceso-directo/
+
+# --- Python ---
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# --- Logs / backups / editor ---
+*.log
+*.bak
+*.bak2
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
