@@ -123,6 +123,13 @@ class Reglas:
         self.parametros = self.d.get("parametros", {})
         self.formulas = self.d.get("formulas", {})
         self.tablas_molde = self.d.get("tablas_molde", {})
+        # Tabla molde -> Ø externo para estructuras espiraladas sobre las que se
+        # enrolla un medio filtrante. Fuente de verdad (reemplaza a la fórmula
+        # molde+4 cuando el molde está en la tabla).
+        self.tabla_externo_rolado = self.d.get("tabla_externo_espiralado_rolado", {})
+        # Tipos de elemento filtrante reconocidos por el código (filtro Y, etc.):
+        # aceleran la lectura de cotas (ver reglas.yaml, sección "tipos_elemento").
+        self.tipos_elemento = self.d.get("tipos_elemento", {})
         self.validaciones = self.d.get("validaciones", [])
         self.tolerancias = self.d.get("tolerancias", {})
         self.criterios = self.d.get("criterios_de_aceptacion", [])
@@ -223,6 +230,18 @@ class Reglas:
         return evaluar(f["formula"], self._entorno(datos))
 
     # -- moldes ---------------------------------------------------------------
+
+    def externo_espiralado_rolado(self, molde):
+        """Ø externo de una estructura ESPIRALADA sobre la que se enrolla un medio
+        filtrante, tomado de la tabla molde->externo. Si el molde no está en la
+        tabla, cae a la fórmula 'diametro_externo_espiralado' (molde + 4)."""
+        if molde is None:
+            return None
+        m = float(molde)
+        for fila_m, ext in (self.tabla_externo_rolado or {}).items():
+            if abs(float(fila_m) - m) < 0.01:
+                return float(ext)
+        return self.aplicar("diametro_externo_espiralado", molde=m)
 
     def buscar_molde(self, tipo, diametro):
         """
@@ -338,23 +357,26 @@ def desarrollo_estructura(reglas, pieza):
     return v, f"Chapa rolada de {esp:g} mm ({limite:g} o mas): a tope, sin solapa"
 
 
-def desarrollo_medio(reglas, producto, forma=None, diam_rolado=None):
+def desarrollo_medio(reglas, producto, forma=None, diam_rolado=None,
+                     q=None, hp=None, vueltas=None):
     """Desarrollo del medio filtrante. Devuelve (valor_mm, explicacion).
     'forma' fuerza plisado/rolado, para filtros con mas de un medio de distinta
     forma (Q y Hp son de los plisados; vueltas, de los rolados).
+    'q', 'hp' y 'vueltas' son POR MEDIO: cada medio (medio, medio_2, medio_3)
+    trae los suyos (q/q_2/q_3, hp/hp_2/hp_3, vueltas/vueltas_2/vueltas_3). Los
+    pasa calcular_dict; asi dos rolados o dos plisados del mismo filtro pueden
+    tener distinta cantidad de vueltas o de pliegues.
     'diam_rolado' es el Ø sobre el que se enrolla (Ø interno de la estructura
     elegida + sobreespesor); si no se pasa, cae al Ø externo del filtro."""
     tipo = forma or producto.get("tipo_medio")
 
     if tipo == "plisado":
-        q, hp = producto.get("q"), producto.get("hp")
         if q is None or hp is None:
             return None, "Faltan Q o Hp"
         v = reglas.aplicar("desarrollo_medio_plisado", Q=q, Hp=hp)
         return v, f"Plisado: {q:g} x {hp:g} x 2 + {q:g}"
 
     if tipo == "rolado":
-        vueltas = producto.get("vueltas")
         if vueltas is None:
             return None, "Falta la cantidad de vueltas"
         if diam_rolado is not None:
@@ -368,30 +390,78 @@ def desarrollo_medio(reglas, producto, forma=None, diam_rolado=None):
     return None, "Tipo de medio sin definir"
 
 
-def altura_estructuras(reglas, altura, texto_tapa):
+# Tipo de tapa que elige Ingenieria (plural, del proceso) -> tipo de descuento.
+_TIPO_TAPA_A_DESCUENTO = {
+    "mecanizadas": "mecanizada", "repujadas": "repujada",
+    "impresas3d": "otra", "plasticas": "otra",
+}
+
+
+def _descuento_tapa(reglas, tipo_elegido=None, texto=None):
+    """Descuento de altura de UNA tapa. 'tipo_elegido' es lo que marca Ingenieria
+    (mecanizadas/repujadas/impresas3d/plasticas); si no está, se detecta del texto."""
+    tipo = _TIPO_TAPA_A_DESCUENTO.get(tipo_elegido) if tipo_elegido else None
+    if not tipo:
+        tipo = reglas.canonico("tipo_tapa", texto)
+    if tipo == "mecanizada":
+        return reglas.parametros["descuento_altura_tapa_mecanizada_mm"], "mecanizada"
+    if tipo == "repujada":
+        return reglas.parametros["descuento_altura_tapa_repujada_mm"], "repujada"
+    return reglas.parametros["descuento_altura_tapa_otra_mm"], (tipo_elegido or "otra")
+
+
+def altura_estructuras(reglas, altura, texto_tapa, texto_tapa_2=None,
+                       tipo1=None, tipo2=None, distintas=False):
     """
-    Altura del nucleo, del nucleo intermedio y de la jaula.
-    Es la altura del filtro menos un descuento que depende del tipo de tapa.
+    Altura del nucleo, del nucleo intermedio y de la jaula = altura del filtro
+    menos el descuento por tapa. Con UNA tapa (o dos iguales) el descuento sale
+    de esa tapa. Con dos tapas de tipo DISTINTO, cada extremo aporta la mitad de
+    su descuento (promedio): asi dos tapas iguales dan el mismo resultado de antes.
     Devuelve (valor_mm, explicacion) o (None, motivo).
     """
     if altura is None:
         return None, "Falta la altura del filtro"
 
-    tipo = reglas.canonico("tipo_tapa", texto_tapa)
-    if tipo == "mecanizada":
-        desc = reglas.parametros["descuento_altura_tapa_mecanizada_mm"]
-        de_donde = "tapa mecanizada"
-    elif tipo == "repujada":
-        desc = reglas.parametros["descuento_altura_tapa_repujada_mm"]
-        de_donde = "tapa repujada"
+    d1, l1 = _descuento_tapa(reglas, tipo1, texto_tapa)
+    if distintas and (texto_tapa_2 or tipo2):
+        d2, l2 = _descuento_tapa(reglas, tipo2, texto_tapa_2)
+        desc = (d1 + d2) / 2
+        de_donde = f"tapas distintas: {l1} + {l2}, descuento por extremo"
     else:
-        desc = reglas.parametros["descuento_altura_tapa_otra_mm"]
-        de_donde = ("tapa no reconocida" if texto_tapa else "sin dato de tapa") + \
-                   ", se usa el descuento general"
+        desc = d1
+        de_donde = ("tapa " + l1) if (texto_tapa or tipo1) else "sin dato de tapa, descuento general"
 
     v = evaluar(reglas.formulas["altura_estructuras"]["formula"],
                 reglas._entorno({"altura": altura, "descuento": desc}))
     return v, f"{altura:g} - {desc:g} ({de_donde})"
+
+
+def tipo_elemento_de(reglas, codigo):
+    """(clave, definicion) del tipo de elemento cuyo 'codigo_regex' matchea el
+    código del plano, o (None, {}). Ej.: 'Y-6-40' -> ('filtro_y', {...})."""
+    if not codigo:
+        return None, {}
+    cod = str(codigo).strip()
+    for clave, d in (reglas.tipos_elemento or {}).items():
+        patron = d.get("codigo_regex")
+        if not patron:
+            continue
+        try:
+            if re.search(patron, cod, re.IGNORECASE):
+                return clave, d
+        except re.error:
+            continue
+    return None, {}
+
+
+def lleva(v):
+    """True si el campo indica que la estructura SÍ está presente. '-' (y vacío /
+    'no' / 'no lleva') significan 'no lleva', igual que en la interfaz. Evita que
+    una estructura ausente (ej. núcleo intermedio '-') se cuente como presente."""
+    if v is None:
+        return False
+    s = str(v).strip().lower()
+    return s not in ("", "-", "--", "no", "no lleva", "n/a", "na", "sin", "0")
 
 
 def _estructura_principal(reglas, presentes):
@@ -443,20 +513,33 @@ def alturas_estructuras(reglas, d):
     Si la orden trae 'altura_estructuras_manual' (cargada a mano por ingenieria),
     ese valor manda: es la altura de la mas alta y las demas van 1 mm menos.
     """
+    _distintas = bool(d.get("tapas_distintas"))
+    _, _tipo = tipo_elemento_de(reglas, d.get("codigo"))
     manual = d.get("altura_estructuras_manual")
     if manual not in (None, ""):
         try:
             base, expl = float(manual), "Cargada a mano"
         except (TypeError, ValueError):
-            base, expl = altura_estructuras(reglas, d.get("altura"), d.get("tapa"))
+            base, expl = None, "Altura manual inválida"
+    elif _tipo.get("sin_tapas"):
+        # Filtro Y (y similares SIN tapas): la altura del plano ES la de la jaula,
+        # NO se le descuenta nada de tapa. Solo aplica a los tipos que lo declaran.
+        if d.get("altura") in (None, ""):
+            base, expl = None, "Falta la altura del filtro"
+        else:
+            base, expl = d.get("altura"), (
+                f"{_tipo.get('nombre', 'Elemento')}: sin tapas, la altura del plano "
+                "es la de la jaula")
     else:
-        base, expl = altura_estructuras(reglas, d.get("altura"), d.get("tapa"))
+        base, expl = altura_estructuras(reglas, d.get("altura"), d.get("tapa"),
+                                        d.get("tapa_2"), d.get("tapa_tipo"),
+                                        d.get("tapa_2_tipo"), _distintas)
     if base is None:
         return None, {}, None, expl
 
     presentes = []
     for pref in ("nucleo", "nucleo_int", "jaula"):
-        if d.get(f"{pref}_crudo"):
+        if lleva(d.get(f"{pref}_crudo")):
             presentes.append({
                 "pref": pref,
                 "conformado": d.get(f"{pref}_conformado"),

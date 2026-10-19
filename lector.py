@@ -182,7 +182,7 @@ CLAVES = {
     "medio":    [r"mesh", r"microfibra", r"papel", r"fieltro", r"celulosic",
                  r"borosilicato", r"medio filtrante", r"reps\b", r"fibra de vidrio",
                  r"velo de vidrio", r"guata", r"punzonado", r"polyester",
-                 r"aramida", r"carbon activado"],
+                 r"aramida", r"carbon activado", r"goma espuma", r"espuma"],
 }
 
 # Una nota habla de UNA cosa. Si coincide con varias etiquetas, gana la
@@ -311,6 +311,15 @@ def leer(ruta_pdf, reg=None):
             motivo=f"Es el texto mas grande del plano ({c.tamano} pt), arriba de todo",
         ).dict()
 
+    # --- TIPO DE ELEMENTO (por el codigo): acelera la lectura de cotas -------
+    codigo_val = (campos.get("codigo") or {}).get("valor")
+    tipo_key, tipo_def = R.tipo_elemento_de(reg, codigo_val)
+    resultado["tipo_elemento"] = tipo_key
+    if tipo_def.get("familia"):
+        campos["familia"] = Dato(
+            valor=tipo_def["familia"], origen=codigo_val, confianza="alta",
+            motivo=f"{tipo_def.get('nombre', 'Elemento')} (por el código)").dict()
+
     # --- COTAS ---------------------------------------------------------------
     cotas = [i for i in items if _es_cota(i, ancho)]
     resultado["cotas"] = [i.dict() for i in cotas]
@@ -383,9 +392,18 @@ def leer(ruta_pdf, reg=None):
                     {"texto": c.texto, "x": c.x, "y": c.y, "tipo": "cota",
                      "nota": "Tercera cota del grupo superior"})
         elif len(grupo) == 1:
-            resultado["sin_asignar"].append(
-                {"texto": grupo[0].texto, "x": grupo[0].x, "y": grupo[0].y,
-                 "tipo": "cota", "nota": "Unica cota horizontal: no se sabe si es ext o int"})
+            c = grupo[0]
+            destino = tipo_def.get("cota_horizontal_unica")
+            if destino in ("od", "id_int"):
+                campos[destino] = Dato(
+                    valor=num(c.texto), origen=c.texto, confianza="alta",
+                    motivo=f"{tipo_def.get('nombre', 'Elemento')}: única cota horizontal = "
+                           + ("Ø externo" if destino == "od" else "Ø interno"),
+                ).dict()
+            else:
+                resultado["sin_asignar"].append(
+                    {"texto": c.texto, "x": c.x, "y": c.y,
+                     "tipo": "cota", "nota": "Unica cota horizontal: no se sabe si es ext o int"})
 
         for c in resto:
             resultado["sin_asignar"].append(
@@ -413,17 +431,6 @@ def leer(ruta_pdf, reg=None):
         n["etiquetas"] = etiquetas
         n["principal"] = principal
 
-        # q y Hp se buscan en TODAS las notas: suelen venir pegados al medio
-        m = RX_Q.search(texto)
-        if m and "q" not in campos:
-            campos["q"] = Dato(valor=int(m.group(1)), origen=m.group(0),
-                               confianza="alta", motivo="Etiqueta 'q:' en el plano").dict()
-        m = RX_HP.search(texto)
-        if m and "hp" not in campos:
-            campos["hp"] = Dato(valor=float(m.group(1).replace(",", ".")),
-                                origen=m.group(0), confianza="alta",
-                                motivo="Etiqueta 'Hp:' en el plano").dict()
-
         if principal == "adhesivo":
             if "adhesivo" not in campos:
                 campos["adhesivo"] = Dato(
@@ -439,7 +446,13 @@ def leer(ruta_pdf, reg=None):
 
         elif principal == "medio":
             # el medio filtrante se copia EXACTO, nunca se interpreta;
-            # solo se le sacan el q y el Hp, que son datos aparte
+            # solo se le sacan el q y el Hp, que son datos aparte. Se guardan POR
+            # MEDIO: si el medio es ROLADO, la "Q:" del plano es la cantidad de
+            # VUELTAS (no pliegues); si es plisado, Q son pliegues y Hp la altura.
+            mq = RX_Q.search(texto)
+            mhp = RX_HP.search(texto)
+            q_val = int(mq.group(1)) if mq else None
+            hp_val = float(mhp.group(1).replace(",", ".")) if mhp else None
             limpio = RX_HP_ENTERA.sub("", RX_Q_ENTERA.sub("", texto))
             limpio = re.sub(r"\s{2,}", " ", limpio).strip(" -·")
 
@@ -454,7 +467,7 @@ def leer(ruta_pdf, reg=None):
                                f"lista ese medio figura solo como "
                                f"{' y '.join(reconocido['formas'])}.",
                 })
-            medios.append({"texto": limpio, "forma": forma,
+            medios.append({"texto": limpio, "forma": forma, "q": q_val, "hp": hp_val,
                            "reconocido": reconocido["nombre"] if reconocido else None})
 
         # --- nucleo / jaula: lo unico que no se puede resolver por texto -----
@@ -500,26 +513,35 @@ def leer(ruta_pdf, reg=None):
     _de_a_dos(sellos, "sello", "una junta u O'ring")
 
     if medios:
-        campos["medio"] = Dato(
-            valor=medios[0]["texto"], origen=medios[0]["texto"], confianza="alta",
-            motivo="La nota nombra un medio filtrante" + (
-                f" — {medios[0]['reconocido']}" if medios[0]["reconocido"] else
-                " (no figura en la lista de medios: revisar)")).dict()
-        if medios[0]["forma"]:
-            campos["tipo_medio"] = Dato(
-                valor=medios[0]["forma"], origen=medios[0]["texto"],
-                confianza="alta", motivo="Lo dice la nota del medio filtrante").dict()
-        # segundo y tercer medio (casi nunca hay mas de dos, pero se contempla)
-        for n, suf in ((1, "_2"), (2, "_3")):
-            if len(medios) > n:
-                campos["medio" + suf] = Dato(
-                    valor=medios[n]["texto"], origen=medios[n]["texto"], confianza="alta",
-                    motivo=f"Medio filtrante {n + 1} del plano" + (
-                        f" — {medios[n]['reconocido']}" if medios[n]["reconocido"] else "")).dict()
-                if medios[n]["forma"]:
-                    campos["tipo_medio" + suf] = Dato(
-                        valor=medios[n]["forma"], origen=medios[n]["texto"],
-                        confianza="alta", motivo=f"Lo dice la nota del medio {n + 1}").dict()
+        # Cada medio con su forma y sus datos (POR MEDIO): si es rolado la "Q:"
+        # del plano son las VUELTAS; si es plisado, Q = pliegues y Hp = altura.
+        for i, suf in ((0, ""), (1, "_2"), (2, "_3")):
+            if i >= len(medios):
+                break
+            med = medios[i]
+            campos["medio" + suf] = Dato(
+                valor=med["texto"], origen=med["texto"], confianza="alta",
+                motivo=(f"Medio filtrante {i + 1} del plano" if i else "La nota nombra un medio filtrante") + (
+                    f" — {med['reconocido']}" if med["reconocido"]
+                    else ("" if i else " (no figura en la lista de medios: revisar)"))).dict()
+            if med["forma"]:
+                campos["tipo_medio" + suf] = Dato(
+                    valor=med["forma"], origen=med["texto"],
+                    confianza="alta", motivo="Lo dice la nota del medio filtrante").dict()
+            if med["forma"] == "rolado":
+                if med["q"] is not None:
+                    campos["vueltas" + suf] = Dato(
+                        valor=med["q"], origen=f"Q: {med['q']}", confianza="media",
+                        motivo="En un medio rolado la 'Q:' del plano es la cantidad de vueltas").dict()
+            else:   # plisado (o sin forma): Q = pliegues, Hp = altura de pliegue
+                if med["q"] is not None:
+                    campos["q" + suf] = Dato(
+                        valor=med["q"], origen=f"Q: {med['q']}", confianza="alta",
+                        motivo="Etiqueta 'Q:' (pliegues) del medio").dict()
+                if med["hp"] is not None:
+                    campos["hp" + suf] = Dato(
+                        valor=med["hp"], origen=f"Hp: {med['hp']}", confianza="alta",
+                        motivo="Etiqueta 'Hp:' (altura de pliegue) del medio").dict()
         for extra in medios[3:]:
             resultado["sin_asignar"].append(
                 {"texto": extra["texto"], "x": 0, "y": 0, "tipo": "medio",
@@ -555,7 +577,10 @@ def leer(ruta_pdf, reg=None):
         })
 
     # --- lo que falta --------------------------------------------------------
-    esperados = ["codigo", "altura", "od", "id_int", "medio", "q", "hp"]
+    # Si el tipo de elemento define sus cotas necesarias (ej. filtro Y: no lleva
+    # núcleo/jaula/pliegues), se piden SOLO esas; si no, la lista genérica.
+    esperados = tipo_def.get("cotas_necesarias") or [
+        "codigo", "altura", "od", "id_int", "medio", "q", "hp"]
     resultado["faltantes"] = [c for c in esperados if c not in campos]
 
     return resultado
@@ -568,11 +593,15 @@ def a_producto(lectura):
     org = lambda k: (c.get(k) or {}).get("origen")
     p = {
         "codigo": (val("codigo") or "").strip() or None,
+        "familia": val("familia"),
         "altura": val("altura"), "od": val("od"), "id_int": val("id_int"),
         "medio": val("medio"), "medio_2": val("medio_2"), "medio_3": val("medio_3"),
         "tipo_medio": val("tipo_medio") or ("plisado" if val("q") else None),
         "tipo_medio_2": val("tipo_medio_2"), "tipo_medio_3": val("tipo_medio_3"),
-        "q": val("q"), "hp": val("hp"),
+        # Q/Hp POR MEDIO (plisado) y vueltas POR MEDIO (rolado).
+        "q": val("q"), "hp": val("hp"), "vueltas": val("vueltas"),
+        "q_2": val("q_2"), "hp_2": val("hp_2"), "vueltas_2": val("vueltas_2"),
+        "q_3": val("q_3"), "hp_3": val("hp_3"), "vueltas_3": val("vueltas_3"),
         "q_crudo": org("q"), "hp_crudo": org("hp"),
         "tapa": val("tapa"), "tapa_2": val("tapa_2"),
         "sello": val("sello"), "sello_2": val("sello_2"),

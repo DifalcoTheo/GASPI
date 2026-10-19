@@ -109,9 +109,10 @@ reglas.py          Rules engine: executes reglas.yaml (no formula written in Pyt
 lector.py          Reads a drawing PDF by geometry; returns each field with origin + confidence
 esquema.sql        SQLite schema (product / lote / linea / plano / molde / comentario / historial / FTS)
 importar.py        One-time legacy migration (reference; not used by the demo)
+mailer.py          Optional e-mail notifications (SMTP) — dormant until configured
 seed_demo.py       One-command demo: builds the DB from sample_data/
 sample_data/       Fictional products, orders and in-process jobs for the demo
-web/index.html     Server-rendered single-page UI
+web/index.html     Server-rendered single-page UI (per-line tabs: General, Seals, Others, Metallurgy, Media, Purchasing, Production)
 ```
 
 ## Notes
@@ -123,5 +124,12 @@ web/index.html     Server-rendered single-page UI
   real drawings, the production database and the legacy migration source are not
   part of this repo (see `.gitignore`). The intake pipeline, the rules engine
   and the whole UI are fully runnable from the sample data.
+- **E-mail notifications** (`mailer.py`) — when an order is sent to production,
+  the team is notified by e-mail (SMTP, with retry and draft-on-failure). It is
+  **dormant** until `datos/notificaciones.json` is configured, so the demo never
+  sends anything; the credentials file is git-ignored.
+- **Per-medium support** — a filter can carry several filtration media, each with
+  its own form (pleated or rolled) and its own development formula; seals are read
+  per end (upper/lower).
 - Built and maintained solo, in production use by Engineering, Production and
   Purchasing.

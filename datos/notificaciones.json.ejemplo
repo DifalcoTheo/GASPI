@@ -1,0 +1,16 @@
+{
+  "_leeme": "Copiar a 'notificaciones.json' (sin .ejemplo) y completar. NO compartir ni subir a ningun repo: tiene la contrasena. Cuando enabled=true y esten remitente/password/destinatarios, ARIANA empieza a mandar los avisos.",
+  "_gmail": "Para Gmail: smtp_host=smtp.gmail.com, smtp_port=465. El 'password' NO es la clave normal de Gmail: hay que activar la Verificacion en 2 pasos y generar una 'Contrasena de aplicacion' (16 letras) en la cuenta de Google -> Seguridad -> Contrasenas de aplicaciones. Esa va aca.",
+  "_titan": "Para Titan (ariana@example.com): smtp_host=smtp.titan.email, smtp_port=465, y el app-password de esa casilla.",
+
+  "enabled": false,
+  "smtp_host": "smtp.gmail.com",
+  "smtp_port": 465,
+  "remitente": "ariana.sp@gmail.com",
+  "nombre_remitente": "ARIANA",
+  "password": "PEGAR_AQUI_LA_CONTRASENA_DE_APLICACION_DE_GMAIL",
+  "destinatarios": [
+    "ingenieria@example.com",
+    "produccion@example.com"
+  ]
+}

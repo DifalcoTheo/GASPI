@@ -36,6 +36,7 @@ BASE = AQUI / "datos" / "sistema_of.db"
 PLANOS = AQUI / "datos" / "planos"
 WEB = AQUI / "web"
 EN_PROCESO = AQUI / "datos" / "en_proceso"   # OF derivadas desde Ariana (SPF-XXXX-CLIENTE/)
+VAULT_CLIENTES = AQUI.parent / "Ariana-Vault" / "Clientes"   # notas de cliente (Obsidian): traen 'vendedor'
 
 
 def _migrar():
@@ -46,6 +47,18 @@ def _migrar():
         if "etiqueta" not in cols:
             con.execute("ALTER TABLE linea ADD COLUMN etiqueta TEXT")
             con.commit()
+        if "reedicion" not in cols:
+            # Marca que una línea (OF ya activa) está momentáneamente "en proceso"
+            # porque Ingeniería la reabrió para editar planos/cotas.
+            con.execute("ALTER TABLE linea ADD COLUMN reedicion INTEGER DEFAULT 0")
+            con.commit()
+        # Q/Hp/vueltas POR MEDIO (medio 2 y 3): asi un filtro con dos medios
+        # rolados/plisados distintos guarda las vueltas/pliegues de cada uno.
+        pcols = [r[1] for r in con.execute("PRAGMA table_info(producto)")]
+        for col in ("vueltas_2", "vueltas_3", "q_2", "q_3", "hp_2", "hp_3"):
+            if col not in pcols:
+                con.execute(f"ALTER TABLE producto ADD COLUMN {col} REAL")
+        con.commit()
         con.close()
     except sqlite3.Error:
         pass
@@ -404,6 +417,18 @@ class FichaGuardar(BaseModel):
     nota: str | None = None
 
 
+def _difieren(a, b):
+    """True si dos valores son realmente distintos. Compara NÚMEROS como números
+    (así 120 e 120.0 son iguales) y el resto como texto normalizado. Evita falsos
+    'la ficha cambió' por int vs float o espacios."""
+    if a in (None, "") and b in (None, ""):
+        return False
+    try:
+        return abs(float(a) - float(b)) > 1e-9
+    except (TypeError, ValueError):
+        return str(a if a is not None else "").strip() != str(b if b is not None else "").strip()
+
+
 @app.post("/api/guardar_ficha")
 def guardar_ficha(datos: FichaGuardar):
     """Guarda la ficha confirmada por la persona. Lo leido nunca se guarda solo."""
@@ -429,7 +454,7 @@ def guardar_ficha(datos: FichaGuardar):
                     [v for k, v in p.items() if k != "codigo"] + [codigo])
         for k, v in p.items():
             viejo = anterior[k] if k in anterior.keys() else None
-            if str(viejo or "") != str(v or ""):
+            if _difieren(viejo, v):
                 con.execute("""INSERT INTO historial
                     (fecha, entidad, entidad_id, campo, valor_anterior, valor_nuevo, nota)
                     VALUES (?,?,?,?,?,?,?)""",
@@ -534,12 +559,15 @@ def calcular_dict(d, reg):
             if pref and d.get(f"{pref}_conformado") == "espiralado":
                 molde = d.get(f"{pref}_molde") or molde_de_texto(d.get(f"{pref}_crudo"))
                 if molde is not None:
-                    diam_rolado = reg.aplicar("diametro_externo_espiralado", molde=float(molde))
+                    diam_rolado = reg.externo_espiralado_rolado(float(molde))
             elif pref:
                 di = d.get(f"{pref}_diam")
                 if di is not None:
                     diam_rolado = float(di) + sob
-        v, expl = R.desarrollo_medio(reg, d, forma, diam_rolado)
+        # Q/Hp/vueltas POR MEDIO: cada medio trae los suyos (q/q_2/q_3, etc.).
+        v, expl = R.desarrollo_medio(reg, d, forma, diam_rolado,
+                                     q=d.get("q" + suf), hp=d.get("hp" + suf),
+                                     vueltas=d.get("vueltas" + suf))
         calc[mk] = {"valor": round(v, 1) if v else None, "detalle": expl,
                     "forma": forma, "sobre": d.get(mk + "_sobre")}
 
@@ -553,7 +581,7 @@ def calcular_dict(d, reg):
         pieza = {k: d.get(f"{prefijo}_{k}") for k in
                  ("material", "conformado", "tipo_chapa", "espesor", "diam",
                   "molde", "kg_m2", "sin_molde")}
-        if not d.get(f"{prefijo}_crudo"):
+        if not R.lleva(d.get(f"{prefijo}_crudo")):
             calc[prefijo] = {"valor": None, "detalle": "No lleva"}
             continue
         alt_pieza = (alturas.get(prefijo) or {}).get("valor")
@@ -640,6 +668,96 @@ def editar_linea(linea_id: int, cambio: DatosLinea):
     return {"ok": True, "cambiados": cambiados}
 
 
+# =============================================================================
+#  Re-edición completa de una OF activa (Ingeniería): planos + cotas, sin borrarla
+# =============================================================================
+
+class ReabrirIn(BaseModel):
+    usuario: str | None = None
+
+
+@app.post("/api/linea/{linea_id}/reabrir")
+def reabrir_linea(linea_id: int, r: ReabrirIn = ReabrirIn()):
+    """Marca la línea como 'en re-edición': sale de OF activas y aparece en
+    'OF en proceso' hasta que Ingeniería confirme o cancele. No pierde nada."""
+    ahora = datetime.now().isoformat(timespec="seconds")
+    con = conexion_escritura()
+    f = con.execute("SELECT id FROM linea WHERE id=?", (linea_id,)).fetchone()
+    if not f:
+        con.close()
+        raise HTTPException(404, "No existe esa linea")
+    con.execute("UPDATE linea SET reedicion=1, actualizado=? WHERE id=?", (ahora, linea_id))
+    con.execute("""INSERT INTO historial (fecha, usuario, entidad, entidad_id, nota)
+                   VALUES (?,?,?,?,?)""",
+                (ahora, r.usuario, "linea", str(linea_id),
+                 "Reabierta para editar (volvió a 'en proceso')"))
+    con.commit()
+    con.close()
+    return {"ok": True}
+
+
+@app.post("/api/linea/{linea_id}/cancelar_reedicion")
+def cancelar_reedicion(linea_id: int, r: ReabrirIn = ReabrirIn()):
+    """Cancela la re-edición sin cambiar nada: vuelve a activas tal cual estaba."""
+    ahora = datetime.now().isoformat(timespec="seconds")
+    con = conexion_escritura()
+    con.execute("UPDATE linea SET reedicion=0, actualizado=? WHERE id=?", (ahora, linea_id))
+    con.execute("""INSERT INTO historial (fecha, usuario, entidad, entidad_id, nota)
+                   VALUES (?,?,?,?,?)""",
+                (ahora, r.usuario, "linea", str(linea_id), "Re-edición cancelada"))
+    con.commit()
+    con.close()
+    return {"ok": True}
+
+
+class ReedicionIn(BaseModel):
+    producto: dict
+    cantidad: int | None = None
+    archivos: list[str] = []
+    etiqueta: str | None = None
+    usuario: str | None = None
+
+
+@app.post("/api/linea/{linea_id}/reeditar")
+def reeditar_linea(linea_id: int, datos: ReedicionIn):
+    """Confirma la re-edición: reemplaza planos y datos técnicos de ESTA orden y
+    la devuelve a activas. NO toca la ficha de la biblioteca."""
+    ahora = datetime.now().isoformat(timespec="seconds")
+    con = conexion_escritura()
+    f = con.execute("SELECT producto_codigo, datos_json FROM linea WHERE id=?",
+                    (linea_id,)).fetchone()
+    if not f:
+        con.close()
+        raise HTTPException(404, "No existe esa linea")
+
+    codigo = (f["producto_codigo"] or "").strip().upper()
+    # se parte de lo que había congelado y se superpone lo editado (no se pierde
+    # ningún campo que el editor no muestre)
+    congelado = json.loads(f["datos_json"] or "{}")
+    congelado.update({k: v for k, v in (datos.producto or {}).items()})
+    principal = datos.archivos[0] if datos.archivos else None
+
+    con.execute("""UPDATE linea SET datos_json=?, cantidad=?, etiqueta=?,
+                       plano_nombre=?, reedicion=0, actualizado=? WHERE id=?""",
+                (json.dumps(congelado, ensure_ascii=False), datos.cantidad,
+                 (datos.etiqueta or "").strip() or None, principal, ahora, linea_id))
+
+    # se reemplazan los planos de la línea por los nuevos
+    con.execute("DELETE FROM plano WHERE linea_id=?", (linea_id,))
+    for archivo in datos.archivos:
+        con.execute("""INSERT INTO plano (producto_codigo, linea_id, nombre, ruta, creado)
+                       VALUES (?,?,?,?,?)""",
+                    (codigo, linea_id, archivo, str(PLANOS / archivo), ahora))
+
+    con.execute("""INSERT INTO historial (fecha, usuario, entidad, entidad_id, nota)
+                   VALUES (?,?,?,?,?)""",
+                (ahora, datos.usuario, "linea", str(linea_id),
+                 f"Re-editada por Ingeniería · {len(datos.archivos)} plano(s)"))
+    con.commit()
+    con.close()
+    return {"ok": True, "planos": datos.archivos}
+
+
 @app.delete("/api/of/{lote}")
 def borrar_orden(lote: str):
     """Borra un lote entero con sus lineas. No toca las fichas de la biblioteca."""
@@ -723,6 +841,25 @@ def en_proceso():
                 "fecha_entrega": datos.get("fecha_entrega"), "origen": datos.get("origen", "manual"),
                 "planos": planos, "tiene_plano": bool(planos),
             })
+
+    # OF ya activas que Ingeniería reabrió para editar (reedicion=1): se muestran
+    # acá para poder retomarlas; se editan en vivo, no viven en la carpeta.
+    con = conexion()
+    reab = con.execute("""SELECT l.id, l.lote_codigo, l.nro, l.producto_codigo, l.cantidad,
+                                 lo.cliente, lo.fecha_entrega, lo.vendedor
+                          FROM linea l JOIN lote lo ON lo.codigo = l.lote_codigo
+                          WHERE COALESCE(l.reedicion,0) = 1
+                          ORDER BY l.actualizado DESC""").fetchall()
+    con.close()
+    for r in reab:
+        items.append({
+            "carpeta": None, "reedicion": True, "linea_id": r["id"],
+            "spf": f"{r['lote_codigo']}-{r['nro']}", "cliente": r["cliente"],
+            "producto": r["producto_codigo"],
+            "oc_numero": None, "vendedor": r["vendedor"],
+            "fecha_entrega": r["fecha_entrega"], "origen": "re-edición",
+            "planos": [], "tiene_plano": False,
+        })
     return items
 
 
@@ -745,6 +882,48 @@ def clientes():
                            GROUP BY cliente ORDER BY n DESC""").fetchall()
     con.close()
     return [f["cliente"] for f in filas]
+
+
+def _frontmatter(texto):
+    """Dict del frontmatter YAML simple (key: value) de un .md de Obsidian."""
+    if not texto.startswith("---"):
+        return {}
+    fin = texto.find("\n---", 3)
+    if fin == -1:
+        return {}
+    datos = {}
+    for linea in texto[3:fin].splitlines():
+        if ":" in linea:
+            k, _, v = linea.partition(":")
+            datos[k.strip()] = v.strip()
+    return datos
+
+
+@app.get("/api/vendedores")
+def vendedores():
+    """Vendedores y el vendedor asignado a cada cliente (del vault de Ariana).
+    Para autocompletar y precargar el vendedor al cargar una Nueva OF."""
+    por_cliente, vends = {}, set()
+    if VAULT_CLIENTES.is_dir():
+        for md in VAULT_CLIENTES.glob("*.md"):
+            try:
+                fm = _frontmatter(md.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            vend = (fm.get("vendedor") or "").strip()
+            if vend and vend.lower() not in ("none", "null", "-"):
+                por_cliente[md.stem.strip().upper()] = vend
+                vends.add(vend)
+    # sumar los vendedores que ya aparecen en el historial de GASPI
+    try:
+        con = conexion()
+        for r in con.execute("SELECT DISTINCT vendedor FROM lote "
+                             "WHERE vendedor IS NOT NULL AND TRIM(vendedor) <> ''"):
+            vends.add(r["vendedor"].strip())
+        con.close()
+    except Exception:
+        pass
+    return {"vendedores": sorted(vends), "por_cliente": por_cliente}
 
 
 class LineaNueva(BaseModel):
@@ -834,7 +1013,13 @@ def crear_orden(orden: OrdenNueva):
         # saltaria en falso apenas creada la orden.
         guardada = con.execute("SELECT * FROM producto WHERE codigo=?",
                                (codigo,)).fetchone()
-        congelado = como_dict(guardada) if guardada else p
+        congelado = como_dict(guardada) if guardada else {}
+        # Los campos que trae la linea se conservan ENCIMA de la ficha de
+        # biblioteca. Para un repetido, 'p' es la ficha CONGELADA de la
+        # fabricacion anterior e incluye decisiones por-OF que no viven en la
+        # biblioteca (tapa_tipo, tapa_2_tipo, tapas_distintas, etc.): asi al
+        # repetir el lote quedan guardadas.
+        congelado.update({k: v for k, v in p.items() if v is not None})
 
         # el primer plano queda como el "principal" (la miniatura de la lista)
         principal = ln.archivos[0] if ln.archivos else None
@@ -860,6 +1045,21 @@ def crear_orden(orden: OrdenNueva):
 
     con.commit()
     con.close()
+
+    # Notificacion automatica por mail (si esta configurada): la OF se envio a
+    # produccion (entro a 'activas'). Nunca rompe la creacion de la OF.
+    try:
+        import mailer
+        lineas_txt = []
+        for ln in orden.lineas:
+            cod = (ln.producto.get("codigo") or "").strip().upper()
+            lineas_txt.append(cod + (f" — {ln.cantidad} u" if ln.cantidad else ""))
+        mailer.notificar_of_produccion(lote, orden.cliente, lineas_txt,
+                                       fecha_entrega=orden.fecha_entrega,
+                                       vendedor=orden.vendedor)
+    except Exception:
+        pass
+
     return {"ok": True, "lote": lote, "lineas": creadas}
 
 
@@ -874,6 +1074,7 @@ def listar_of(estado: str = "activas"):
                SUM(l.estado = 'en_produccion') AS en_produccion,
                SUM(l.estado = 'pausada')       AS pausadas,
                SUM(l.estado = 'pendiente')     AS pendientes,
+               SUM(COALESCE(l.reedicion,0) = 1) AS en_reedicion,
                SUM(l.compra_json IS NOT NULL AND l.compra_json <> '') AS con_compra,
                SUM(COALESCE(l.cantidad, 0))    AS total_piezas
         FROM lote lo JOIN linea l ON l.lote_codigo = lo.codigo
@@ -885,7 +1086,9 @@ def listar_of(estado: str = "activas"):
     for f in filas:
         d = como_dict(f)
         d["completo"] = d["lineas"] > 0 and d["finalizadas"] == d["lineas"]
-        if estado == "activas" and d["completo"]:
+        # trabajo "vivo" que NO está en re-edición (las reabiertas viven en "en proceso")
+        activas_reales = d["lineas"] - (d["finalizadas"] or 0) - (d["en_reedicion"] or 0)
+        if estado == "activas" and (d["completo"] or activas_reales <= 0):
             continue
         if estado == "finalizadas" and not d["completo"]:
             continue
@@ -1002,7 +1205,12 @@ def ver_linea(linea_id: int):
                   "nucleo_crudo", "jaula_crudo"):
             if k in actual.keys():
                 viejo, nuevo = d.get(k), actual[k]
-                if str(viejo or "") != str(nuevo or ""):
+                # Solo es un "cambio de ficha" si AMBOS lados tienen valor y difieren.
+                # Si la ficha (o la orden) está vacía es dato incompleto, no un cambio:
+                # no se avisa (evita notas confusas tipo "orden X → ficha —").
+                if (viejo is not None and str(viejo).strip() != ""
+                        and nuevo is not None and str(nuevo).strip() != ""
+                        and _difieren(viejo, nuevo)):
                     cambios.append({"campo": k, "en_la_orden": viejo,
                                     "en_la_ficha": nuevo})
 
@@ -1151,24 +1359,55 @@ def marcar_proceso(linea_id: int, p: Proceso):
 
 class TapaTipo(BaseModel):
     tipo: str
+    cual: int = 1            # 1 = tapa; 2 = tapa 2 (cuando son distintas)
 
 
 @app.post("/api/linea/{linea_id}/tapa_tipo")
 def set_tapa_tipo(linea_id: int, t: TapaTipo):
-    """Guarda el tipo de proceso de tapa elegido (define cual checklist se muestra)."""
+    """Guarda el tipo de tapa elegido. Se guarda en datos_json (tapa_tipo /
+    tapa_2_tipo) para que la ALTURA de estructuras lo use, y en procesos_json
+    (compat) para el checklist."""
     ahora = datetime.now().isoformat(timespec="seconds")
     con = conexion_escritura()
-    f = con.execute("SELECT procesos_json FROM linea WHERE id=?", (linea_id,)).fetchone()
+    f = con.execute("SELECT procesos_json, datos_json FROM linea WHERE id=?",
+                    (linea_id,)).fetchone()
     if not f:
         con.close()
         raise HTTPException(404, "No existe esa linea")
     procesos = json.loads(f["procesos_json"] or "{}")
-    procesos["_tapa_tipo"] = t.tipo
-    con.execute("UPDATE linea SET procesos_json=?, actualizado=? WHERE id=?",
-                (json.dumps(procesos, ensure_ascii=False), ahora, linea_id))
+    datos = json.loads(f["datos_json"] or "{}")
+    clave = "tapa_2_tipo" if t.cual == 2 else "tapa_tipo"
+    datos[clave] = t.tipo
+    if t.cual != 2:
+        procesos["_tapa_tipo"] = t.tipo    # compat con el checklist actual
+    con.execute("UPDATE linea SET procesos_json=?, datos_json=?, actualizado=? WHERE id=?",
+                (json.dumps(procesos, ensure_ascii=False),
+                 json.dumps(datos, ensure_ascii=False), ahora, linea_id))
     con.commit()
     con.close()
-    return {"ok": True, "tipo": t.tipo}
+    return {"ok": True, "tipo": t.tipo, "cual": t.cual}
+
+
+class TapasDistintas(BaseModel):
+    distintas: bool
+
+
+@app.post("/api/linea/{linea_id}/tapas_distintas")
+def set_tapas_distintas(linea_id: int, t: TapasDistintas):
+    """Marca si las dos tapas son de tipo distinto (cada extremo con su descuento)."""
+    ahora = datetime.now().isoformat(timespec="seconds")
+    con = conexion_escritura()
+    f = con.execute("SELECT datos_json FROM linea WHERE id=?", (linea_id,)).fetchone()
+    if not f:
+        con.close()
+        raise HTTPException(404, "No existe esa linea")
+    datos = json.loads(f["datos_json"] or "{}")
+    datos["tapas_distintas"] = bool(t.distintas)
+    con.execute("UPDATE linea SET datos_json=?, actualizado=? WHERE id=?",
+                (json.dumps(datos, ensure_ascii=False), ahora, linea_id))
+    con.commit()
+    con.close()
+    return {"ok": True, "distintas": bool(t.distintas)}
 
 
 @app.get("/api/chapas")
@@ -1310,7 +1549,7 @@ def mis_ips():
                 ips.append(ip)
     except Exception:
         pass
-    # la que efectivamente sale a la red local, primero
+    # la que efectivamente sale a la red de la empresa, primero
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 1))

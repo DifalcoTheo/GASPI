@@ -171,6 +171,7 @@
   .leido.baja input{background:var(--mal-bg); border-color:var(--mal-bor);}
   .leido.falta input{background:#f1f5f9; border-style:dashed;}
   .leido .porque{font-size:10px; color:var(--gris); margin-top:3px; line-height:1.45;}
+  .leido .porque a{color:#eaf1fb; text-decoration:underline;}   /* link legible sobre fondo oscuro */
 
   .duda{padding:10px 14px; border-top:1px solid var(--borde); background:var(--warn-bg);}
   .duda.listo{background:var(--ok-bg);}
@@ -490,7 +491,7 @@ tbody tr.clic:hover{ background:var(--lila2); }
    BASE
 ========================================================= */
 const $ = s => document.querySelector(s);
-const esc = t => (t ?? "").toString().replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+const esc = t => (t ?? "").toString().replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");
 const nn = v => (v === null || v === undefined || v === "") ? "—" : v;
 const mm = v => (v === null || v === undefined) ? "—" :
   (Math.round(v * 10) / 10).toLocaleString("es-AR") + " mm";
@@ -635,7 +636,22 @@ async function recalcularEntrega(){
   dibujarNueva();
 }
 
+let VENDINFO = null;
+async function cargarVendInfo(){
+  if (VENDINFO) return;
+  try { VENDINFO = await api("/api/vendedores"); }
+  catch(e){ VENDINFO = {vendedores: [], por_cliente: {}}; }
+}
+/* Autocompleta el vendedor según el cliente (mapa del vault). Respeta un
+   vendedor puesto a mano: solo pisa si está vacío o si lo puso el automático. */
+function autoVendedor(){
+  if (!VENDINFO || !OF) return;
+  const v = VENDINFO.por_cliente[(OF.cliente || "").trim().toUpperCase()];
+  if (v && (!OF.vendedor || OF._vendAuto)){ OF.vendedor = v; OF._vendAuto = true; }
+}
+
 function dibujarNueva(){
+  if (!VENDINFO){ cargarVendInfo().then(() => { if (OF) dibujarNueva(); }); }
   const lineas = OF.lineas.map((l, i) => {
     const est = l.estado || {};
     const activa = i === OF.activa;
@@ -669,7 +685,7 @@ function dibujarNueva(){
           <div class="nota">Propuesto${OF.ultimo ? " a partir de " + esc(OF.ultimo) : ""}. Editable.</div></div>
         <div class="campo"><label class="et">Cliente</label>
           <input list="listaClientes" value="${esc(OF.cliente)}"
-                 placeholder="Cliente o STOCK" onchange="OF.cliente=this.value;dibujarNueva()">
+                 placeholder="Cliente o STOCK" onchange="OF.cliente=this.value;autoVendedor();dibujarNueva()">
           <datalist id="listaClientes">${OF.clientes.map(c => `<option value="${esc(c)}">`).join("")}</datalist></div>
         <div class="campo"><label class="et">Fecha de OC</label>
           <input type="date" value="${esc(OF.fecha_oc)}"
@@ -679,7 +695,10 @@ function dibujarNueva(){
                  onchange="OF.fecha_entrega=this.value">
           <div class="nota">OC + ${OF.dias} días. Editable.</div></div>
         <div class="campo"><label class="et">Vendedor</label>
-          <input value="${esc(OF.vendedor)}" onchange="OF.vendedor=this.value"></div>
+          <input list="listaVendedores" value="${esc(OF.vendedor)}" placeholder="Empezá a escribir…"
+                 onchange="OF.vendedor=this.value;OF._vendAuto=false">
+          <datalist id="listaVendedores">${(VENDINFO ? VENDINFO.vendedores : []).map(v => `<option value="${esc(v)}">`).join("")}</datalist>
+          ${OF._vendAuto ? `<div class="nota">Sugerido por el cliente ${esc(OF.cliente)} — cambialo si no corresponde.</div>` : ""}</div>
       </div>
     </div>
 
@@ -840,6 +859,14 @@ function mergearLinea(ln){
     }
   });
   Object.assign(merged, ln.asignaciones);          // resolución manual de conflictos
+  // Re-edición: los planos nuevos mandan, pero los campos que el plano no menciona
+  // se conservan de lo que ya tenía congelado la orden (ln.base).
+  if (ln.base){
+    for (const [k, v] of Object.entries(ln.base)){
+      if ((merged[k] === undefined || merged[k] === null || merged[k] === "")
+          && v !== null && v !== undefined && v !== "") merged[k] = v;
+    }
+  }
   ln.conflictos = conflictos.filter(c => ln.asignaciones[c.campo] === undefined);
   ln.producto = merged;
 
@@ -854,6 +881,8 @@ function mergearLinea(ln){
   ln.resumen = d.join(" · ");
 
   if (ln.repetida){ ln.lista = true; return; }   // repetido: ya viene listo de la biblioteca
+  if (ln.reedicion && !ln.planos.length){        // re-edición sin plano nuevo aún: se puede corregir a mano
+    ln.estado = {clase:"warn", texto:"Sin plano — editable a mano"}; ln.lista = true; return; }
   if (!ln.planos.length){ ln.estado = {clase:"", texto:"vacío"}; ln.lista = false; return; }
   if (dudas){ ln.estado = {clase:"mal", texto:`${dudas} sin asignar`}; }
   else if (ln.conflictos.length){ ln.estado = {clase:"warn", texto:`${ln.conflictos.length} en conflicto`}; }
@@ -861,6 +890,7 @@ function mergearLinea(ln){
   else if (ya){ ln.estado = {clase:"ok", texto:`Ya en biblioteca · ${ya.veces} vez${ya.veces === 1 ? "" : "es"}`}; }
   else { ln.estado = {clase:"ok", texto: ln.planos.length > 1 ? `Leído · ${ln.planos.length} planos` : "Leído completo"}; }
   ln.lista = !dudas && !ln.conflictos.length && (!difs || ln.confirmada);
+  if (ln.reedicion) ln.lista = true;   // en re-edición Ingeniería siempre puede confirmar
 }
 
 async function confirmarOF(){
@@ -896,15 +926,15 @@ const CAMPOS = [
   ["nucleo_diam","Ø interno núcleo (mm)"],
   ["nucleo_int_diam","Ø interno núcleo interm. (mm)"],
   ["jaula_diam","Ø interno jaula (mm)"],
-  ["medio","Medio filtrante"],["tipo_medio","Forma del medio"],
-  ["medio_2","Medio filtrante 2"],["tipo_medio_2","Forma del medio 2"],
+  ["medio","Medio filtrante"],["tipo_medio","Forma del medio"],["vueltas","Vueltas (si es rolado)"],
+  ["medio_2","Medio filtrante 2"],["tipo_medio_2","Forma del medio 2"],["vueltas_2","Vueltas 2 (si es rolado)"],
   ["q","Q — pliegues"],["hp","Hp — alt. pliegue"],["tapa","Tapa"],["tapa_2","Tapa 2"],
   ["sello","Sello / junta"],["sello_2","Sello / junta 2"],["adhesivo","Adhesivo"],
   ["observaciones","Observaciones"]];
 const SIEMPRE = ["codigo","altura","od","id_int","nucleo_diam","nucleo_int_diam",
                  "jaula_diam","medio","q","hp"];
 const NUMERICOS = ["altura","od","id_int","nucleo_diam","nucleo_int_diam",
-                   "jaula_diam","q","hp"];
+                   "jaula_diam","q","hp","vueltas","vueltas_2"];
 
 function verLectura(i){
   iLinea = i; planoSel = 0; campoActivo = null;
@@ -915,6 +945,45 @@ function verLectura(i){
 function dibujarLectura(){
   const ln = OF.lineas[iLinea];
   if (!ln.planos.length){
+    if (OF.reedicion){          // re-edición sin plano aún: campos a mano + zona para el plano nuevo
+      const editable = rol === "ingenieria";
+      const merged = ln.producto;
+      const campos = CAMPOS.map(([k, et]) => {
+        const v = merged[k];
+        if ((v === null || v === undefined || v === "") && !SIEMPRE.includes(k)) return "";
+        return `<div class="leido ${v !== undefined && v !== null && v !== "" ? "alta" : "falta"}">
+          <div class="et">${et}</div><div>
+          <input value="${esc(v ?? "")}" ${editable ? "" : "readonly"}
+            onchange="OF.lineas[${iLinea}].asignaciones['${k}']=${
+              NUMERICOS.includes(k) ? "(this.value===''?null:parseFloat(this.value.replace(',','.')))" : "this.value"
+            };mergearLinea(OF.lineas[${iLinea}]);dibujarLectura()"></div></div>`;
+      }).join("");
+      $("#pag-linea").innerHTML = `
+        <h2 class="titulo">${esc(OF.lote)}-${iLinea + 1} — ${esc(merged.codigo || "?")} · re-edición</h2>
+        <div class="dos">
+          <div class="plano-caja">
+            <div class="zona" id="zonaL" style="min-height:220px">
+              <b>Arrastrá el plano corregido</b><br>
+              <span class="chico2">o hacé click para elegirlo · reemplaza el plano roto y lee las cotas</span>
+              <input type="file" id="pdfInputL" accept="application/pdf" multiple style="display:none">
+            </div>
+            <div id="estadoCarga"></div>
+          </div>
+          <div>
+            <div class="card"><h3><span>Datos de la orden (editables a mano)</span>
+              <button onclick="cancelarReedicion()">✕ Cancelar</button></h3>
+              <div class="aviso">Corregí los valores a mano, o subí el plano nuevo para que lea las cotas solo.</div>
+              ${campos}
+            </div>
+            <div class="card"><h3>Listo</h3><div style="padding:12px">
+              <button class="primario" onclick="confirmarReedicion()">Confirmar y volver a activas</button>
+              <span class="chico2"> — guarda los cambios sin borrar la OF</span>
+            </div></div>
+          </div>
+        </div>`;
+      conectarZonaLinea();
+      return;
+    }
     $("#pag-linea").innerHTML = `
       <h2 class="titulo">${esc(OF.lote)}-${iLinea + 1}</h2>
       <div class="card"><h3><span>Sin planos</span>
@@ -1028,15 +1097,20 @@ function dibujarLectura(){
       </div>
       <div>
         <div class="card"><h3><span>Datos combinados de ${ln.planos.length} plano(s)</span>
-          <button onclick="mostrar('nueva');dibujarNueva()">← Volver</button></h3>
+          ${OF.reedicion
+            ? `<button onclick="cancelarReedicion()">✕ Cancelar</button>`
+            : `<button onclick="mostrar('nueva');dibujarNueva()">← Volver</button>`}</h3>
           ${avisos}${campos}
           ${pieza("nucleo","Núcleo")}${pieza("nucleo_int","Núcleo intermedio")}${pieza("jaula","Jaula")}
         </div>
         ${ln.conflictos.length ? `<div class="card"><h3>Conflictos entre planos</h3>${conflictos}</div>` : ""}
         ${L.sin_asignar.length ? `<div class="card"><h3>Resolver a mano — plano ${planoSel + 1}</h3>${dudas}</div>` : ""}
         <div class="card"><h3>Listo</h3><div style="padding:12px">
-          <button class="primario" onclick="marcarLista()">Confirmar este elemento</button>
-          <span class="chico2"> — ${ln.lista ? "ya está listo" : "resolvé lo pendiente para poder confirmar"}</span>
+          ${OF.reedicion
+            ? `<button class="primario" onclick="confirmarReedicion()">Confirmar y volver a activas</button>
+               <span class="chico2"> — guarda los planos y datos nuevos sin borrar la OF</span>`
+            : `<button class="primario" onclick="marcarLista()">Confirmar este elemento</button>
+               <span class="chico2"> — ${ln.lista ? "ya está listo" : "resolvé lo pendiente para poder confirmar"}</span>`}
         </div></div>
       </div>
     </div>`;
@@ -1106,6 +1180,65 @@ function marcarLista(){
   ln.confirmada = true;
   mergearLinea(ln);
   mostrar("nueva"); dibujarNueva();
+}
+
+/* ---------- Re-edición de una OF activa (sólo Ingeniería) ----------
+   Reabre la línea: vuelve a "en proceso", abre el editor completo (cambiar
+   planos + cotas + campos a mano) y al confirmar la devuelve a activas.
+   No borra la OF ni toca la biblioteca. */
+async function reabrirParaEditar(id){
+  if (rol !== "ingenieria") return;
+  let r;
+  try { r = await api("/api/linea/" + id); }
+  catch(e){ return; }
+  try { await api("/api/linea/" + id + "/reabrir", {method:"POST",
+        headers:{"Content-Type":"application/json"}, body: JSON.stringify({usuario: rol})}); }
+  catch(e){}
+  let clientes = []; try { clientes = await api("/api/clientes"); } catch(e){}
+  const l = r.linea, d = r.datos || {};
+  const ln = nuevaLinea();
+  ln.producto  = Object.assign({}, d);
+  ln.base      = Object.assign({}, d);   // lo congelado: se conserva si el plano no lo menciona
+  ln.cantidad  = l.cantidad;
+  ln.etiqueta  = l.etiqueta || null;
+  ln.reedicion = true;
+  ln.lista     = true;
+  OF = { reedicion:{lineaId:id, lote:l.lote_codigo}, lote:l.lote_codigo,
+         cliente:l.cliente || "", fecha_entrega:l.fecha_entrega, fecha_oc:l.fecha_oc || null,
+         vendedor:"", clientes, lineas:[ln], activa:0 };
+  iLinea = 0; planoSel = 0;
+  mergearLinea(ln);
+  verLectura(0);
+}
+
+async function confirmarReedicion(){
+  if (!OF || !OF.reedicion) return;
+  const id = OF.reedicion.lineaId, ln = OF.lineas[0];
+  try{
+    await api("/api/linea/" + id + "/reeditar", {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({
+        producto: ln.producto, cantidad: ln.cantidad,
+        archivos: ln.planos.map(pl => pl.lectura.archivo),
+        etiqueta: ln.etiqueta || null, usuario: rol})});
+  }catch(e){
+    $("#estadoCarga") && ($("#estadoCarga").innerHTML = `<div class="status warn">${esc(e.message)}</div>`);
+    return;
+  }
+  OF = null;
+  await cargarResumen();
+  verLineaOF(id);
+}
+
+async function cancelarReedicion(){
+  if (!OF || !OF.reedicion) return;
+  const id = OF.reedicion.lineaId;
+  try { await api("/api/linea/" + id + "/cancelar_reedicion", {method:"POST",
+        headers:{"Content-Type":"application/json"}, body: JSON.stringify({usuario: rol})}); }
+  catch(e){}
+  OF = null;
+  await cargarResumen();
+  verLineaOF(id);
 }
 
 /* =========================================================
@@ -1242,24 +1375,40 @@ async function verLineaOF(id, seguirEditando){
     return p.length ? p.join(" · ") : "—";
   };
 
-  /* --- una estructura: material compacto, Ø interno, altura y desarrollo --- */
+  /* --- una estructura: material compacto, Ø interno, altura y desarrollo.
+         En edición muestra los campos que leyó el plano (material, conformado,
+         tipo de chapa, espesor, Ø perforación, molde) para revisarlos y
+         completarlos a mano. El desarrollo se calcula con estos campos. --- */
   const estructura = (pref, et) => {
     const crudo = val(pref + "_crudo");
     if (!lleva(pref + "_crudo") && !val(pref + "_diam") && !editando) return "";
     const it = c[pref] || {};
+    const lblS = "display:flex;flex-direction:column;gap:2px;font-size:9px;letter-spacing:.04em;text-transform:uppercase;color:var(--gris,#9fb3c8)";
+    const inS = "font-size:12px;padding:3px 5px";
+    const opt = (cur, arr) => arr.map(o => `<option value="${o}" ${(cur||"")===o?"selected":""}>${o||"—"}</option>`).join("");
+    const numOn = k => `edicion['${pref}_${k}']=(this.value===''?null:parseFloat(this.value.replace(',','.')))`;
+    const sub = editando ? `
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;margin-top:6px">
+        <label style="${lblS}">Material<input style="${inS}" value="${esc(val(pref+'_material') ?? '')}" onchange="edicion['${pref}_material']=this.value||null"></label>
+        <label style="${lblS}">Conformado<select style="${inS}" onchange="edicion['${pref}_conformado']=this.value||null">${opt(val(pref+'_conformado'), ['','espiralado','rolado'])}</select></label>
+        <label style="${lblS}">Chapa<select style="${inS}" onchange="edicion['${pref}_tipo_chapa']=this.value||null">${opt(val(pref+'_tipo_chapa'), ['','perforado','ranurado','desplegado'])}</select></label>
+        <label style="${lblS}">Espesor mm<input style="${inS}" value="${esc(val(pref+'_espesor') ?? '')}" onchange="${numOn('espesor')}"></label>
+        <label style="${lblS}">Ø perforación<input style="${inS}" value="${esc(val(pref+'_perforacion') ?? '')}" onchange="${numOn('perforacion')}"></label>
+        <label style="${lblS}">Molde<input style="${inS}" value="${esc(val(pref+'_molde') ?? '')}" onchange="${numOn('molde')}"></label>
+      </div>` : "";
     return `<tr>
-      <td style="width:1%"><b>${et}</b></td>
+      <td style="width:1%;vertical-align:top"><b>${et}</b></td>
       <td>${editando
-        ? `<input value="${esc(crudo ?? "")}" onchange="edicion['${pref}_crudo']=this.value">`
+        ? `<input style="width:100%" placeholder="Nota del plano (texto crudo)" value="${esc(crudo ?? "")}" onchange="edicion['${pref}_crudo']=this.value">${sub}`
         : `<span class="chico2">${matCompacto(pref)}</span>`}</td>
-      <td class="num" style="width:1%">${editando
+      <td class="num" style="width:1%;vertical-align:top">${editando
         ? `<input style="width:82px" value="${esc(val(pref + "_diam") ?? "")}"
              onchange="edicion['${pref}_diam']=(this.value===''?null:parseFloat(this.value.replace(',','.')))">`
         : mm(val(pref + "_diam"))}</td>
-      <td class="num" style="width:1%">${it.altura != null
+      <td class="num" style="width:1%;vertical-align:top">${it.altura != null
         ? mm(it.altura) + (it.principal ? `<div class="chico2" style="color:var(--ok);font-weight:600">más alta</div>` : "")
         : "—"}</td>
-      <td style="width:1%; min-width:150px">${desarrollo(c[pref])}</td></tr>`;
+      <td style="width:1%; min-width:150px;vertical-align:top">${desarrollo(c[pref])}</td></tr>`;
   };
 
   const cambio = r.ficha_cambio.length ? `<div class="aviso">
@@ -1291,7 +1440,7 @@ async function verLineaOF(id, seguirEditando){
       } else {
         label = "Medio " + (i + 1);
       }
-      return {mk, tk, hay, forma, formaRaw, label, base: mk, pasos: PASOS_MEDIO[forma]};
+      return {mk, tk, hay, forma, formaRaw, label, base: mk, suf: mk.slice(5), pasos: PASOS_MEDIO[forma]};
     });
 
   const PARTES = [
@@ -1314,14 +1463,19 @@ async function verLineaOF(id, seguirEditando){
     .map(([k, et]) => `<h3 style="border-radius:0">${et}</h3>${
       panelProceso(id, proc, k, PASOS_ESTRUCTURA, et + " completo")}`).join("");
 
-  /* --- proceso de tapas: el tipo define su checklist --- */
-  const tipoTapa = proc._tapa_tipo || detectarTipoTapa(val("tapa")) || "repujadas";
+  /* --- proceso de tapas: el tipo define su checklist. Puede haber dos tapas
+         de distinto tipo (cada extremo con su descuento y su checklist). --- */
+  const tapasDistintas = !!val("tapas_distintas");
+  const tipoTapa  = val("tapa_tipo")   || proc._tapa_tipo || detectarTipoTapa(val("tapa"))   || "repujadas";
+  const tipoTapa2 = val("tapa_2_tipo") || detectarTipoTapa(val("tapa_2")) || tipoTapa;
 
   /* --- tabla de medios (una fila por medio) y checklist por medio --- */
   const estructurasPresentes = [["nucleo", "Núcleo"], ["nucleo_int", "Núcleo interm."], ["jaula", "Jaula"]]
     .filter(([pref]) => lleva(pref + "_crudo")).map(([pref, et]) => ({pref, et}));
+  const esIngM = rol === "ingenieria";
   const mediosFilas = mediosLista.map((m, i) => {
     if (!m.hay && !editando) return "";
+    const suf = m.suf;
     const desc = editando
       ? `<input value="${esc(val(m.mk) ?? "")}" onchange="edicion['${m.mk}']=this.value">`
       : `<span class="chico2">${m.hay ? esc(val(m.mk)) : "—"}</span>`;
@@ -1329,10 +1483,10 @@ async function verLineaOF(id, seguirEditando){
       ? `<input style="width:66px" value="${esc(val(k) ?? "")}"
            onchange="edicion['${k}']=(this.value===''?null:parseFloat(this.value.replace(',','.')))">`
       : nn(val(k));
-    // Q y Hp SOLO en los plisados. Un rolado nunca tiene pliegues.
-    const esPlisado = m.hay && m.formaRaw === "plisado";
-    const celQ = esPlisado ? num("q") : "—";
-    const celHp = esPlisado ? num("hp") : "—";
+    // Q y Hp SOLO en los plisados, POR MEDIO (q/q_2/q_3). Un rolado no lleva pliegues.
+    const esPlisado = m.formaRaw === "plisado";
+    const celQ = (esPlisado && (m.hay || editando)) ? num("q" + suf) : "—";
+    const celHp = (esPlisado && (m.hay || editando)) ? num("hp" + suf) : "—";
     const cm = c[m.mk];
     const valorDes = cm && cm.valor != null
       ? `<span style="color:var(--ok);font-weight:700;font-family:var(--mono)">${mm(cm.valor)}</span>`
@@ -1341,22 +1495,39 @@ async function verLineaOF(id, seguirEditando){
     if (!m.hay) {
       celDes = "—";
     } else if (m.formaRaw === "rolado") {
-      // el rolado se enrolla sobre una estructura: se elige cuál (define el Ø)
+      // el rolado se enrolla sobre una estructura (define el Ø) y necesita las VUELTAS
       const sel = val(m.mk + "_sobre") || "";
+      const vueltas = val("vueltas" + suf);
+      const vueltasCtl = esIngM
+        ? `<label style="display:inline-flex;align-items:center;gap:4px;margin-top:4px;font-size:10px;color:var(--gris)">vueltas
+             <input style="width:60px;font-size:12px;padding:2px 4px" value="${esc(vueltas ?? "")}"
+               onchange="guardarDato(${id},'vueltas${suf}',(this.value===''?null:parseFloat(this.value.replace(',','.'))),'Cantidad de vueltas del rolado')"></label>`
+        : `<div class="chico2" style="margin-top:4px">vueltas: ${nn(vueltas)}</div>`;
       celDes = `<select style="font-size:11px;padding:3px 5px;width:auto"
           onchange="setRoladoSobre(${id},'${m.mk}',this.value)">
           <option value="">— rolado sobre… —</option>
           ${estructurasPresentes.map(e => `<option value="${e.pref}" ${sel === e.pref ? "selected" : ""}>${e.et}</option>`).join("")}
         </select>
-        <div style="margin-top:3px">${sel ? valorDes : `<span class="chico2">elegí la estructura</span>`}</div>`;
+        <div>${vueltasCtl}</div>
+        <div style="margin-top:3px">${(sel && vueltas != null) ? valorDes
+          : `<span class="chico2">${!sel ? "elegí la estructura" : "falta la cantidad de vueltas"}</span>`}</div>`;
     } else {
       celDes = valorDes;
     }
-    return `<tr><td style="width:1%"><b>${m.hay ? m.label : "Medio " + (i + 1)}</b></td>
+    // Clasificar el medio (plisado/rolado) — Ingeniería, guarda al instante.
+    const clasif = (m.hay && esIngM)
+      ? `<div style="margin-top:3px"><select style="font-size:10px;padding:1px 3px;width:auto"
+           onchange="guardarDato(${id},'${m.tk}',this.value||null,'Clasificación del medio (plisado/rolado)')">
+           <option value="" ${!m.formaRaw ? "selected" : ""}>— clasificar —</option>
+           <option value="plisado" ${m.formaRaw === "plisado" ? "selected" : ""}>Plisado</option>
+           <option value="rolado" ${m.formaRaw === "rolado" ? "selected" : ""}>Rolado</option>
+         </select></div>`
+      : "";
+    return `<tr><td style="width:1%;vertical-align:top"><b>${m.hay ? m.label : "Medio " + (i + 1)}</b>${clasif}</td>
       <td>${desc}</td>
-      <td class="num" style="width:1%">${celQ}</td>
-      <td class="num" style="width:1%">${celHp}</td>
-      <td style="width:1%; min-width:150px">${celDes}</td></tr>`;
+      <td class="num" style="width:1%;vertical-align:top">${celQ}</td>
+      <td class="num" style="width:1%;vertical-align:top">${celHp}</td>
+      <td style="width:1%; min-width:150px;vertical-align:top">${celDes}</td></tr>`;
   }).join("");
 
   const mediosChecks = mediosLista.filter(m => m.hay)
@@ -1420,15 +1591,17 @@ async function verLineaOF(id, seguirEditando){
             ${editando
               ? `<button class="chico" onclick="guardarEdicion(${id})">Guardar cambios</button>
                  <button class="chico gris" onclick="editando=false;edicion={};verLineaOF(${id})">Cancelar</button>
-                 <span class="chico2">Corrige esta orden. No toca la ficha de la biblioteca.</span>`
-              : `<button class="chico gris" onclick="editando=true;verLineaOF(${id},true)">Editar lo que leyó el plano</button>`}
+                 <span class="chico2">Corrige los valores de esta orden. No toca la ficha de la biblioteca.</span>`
+              : `<button class="chico gris" onclick="editando=true;verLineaOF(${id},true)">Corregir valores a mano</button>
+                 <button class="chico gris" onclick="reabrirParaEditar(${id})">Editar lo que leyó el plano</button>
+                 <span class="chico2"><b>Corregir valores a mano</b>: cambia un dato sin reabrir la OF. · <b>Editar lo que leyó el plano</b>: reabre la OF (vuelve a "en proceso") para cambiar planos y cotas. Ninguna toca la biblioteca.</span>`}
           </div>`}
         </div>
 
         <div class="ltabs">
-          ${[["general","General"],["tapas","Tapas"],["metalurgica","Metalúrgica"],
+          ${[["general","General"],["tapas","Tapas"],["sellos","Sellos"],["otros","Otros"],["metalurgica","Metalúrgica"],
              ["medios","Medios filtrantes"],["compra","Compra interna"],
-             ["comentarios","Producción"],["tolerancias","Tolerancias"]]
+             ["comentarios","Producción"]]
             .map(([k, t]) => `<button data-lt="${k}" class="${tabLinea === k ? "activa" : ""}"
               onclick="tabL('${k}')">${t}</button>`).join("")}
         </div>
@@ -1462,18 +1635,68 @@ async function verLineaOF(id, seguirEditando){
             <table><thead><tr><th>Tapa</th><th>Material</th><th>Tipo</th><th>Detalle</th></tr></thead>
               <tbody>
                 ${tapaFila("Tapa", "tapa")}
-                ${lleva("tapa_2") || editando ? tapaFila("Tapa 2", "tapa_2") : ""}
+                ${lleva("tapa_2") || editando || tapasDistintas ? tapaFila("Tapa 2", "tapa_2") : ""}
               </tbody></table>
             <h3 style="border-radius:0">Proceso de tapas</h3>
-            <div class="campo" style="border-right:none">
-              <label class="et">Tipo de tapa</label>
-              <select onchange="setTapaTipo(${id}, this.value)">
-                ${TAPA_TIPOS.map(([v, t]) => `<option value="${v}" ${v === tipoTapa ? "selected" : ""}>${t}</option>`).join("")}
-              </select>
-              <div class="nota">${proc._tapa_tipo
-                ? "Elegido a mano." : "Sugerido por el texto de la tapa — cambialo si no corresponde."}</div>
-            </div>
-            ${panelProceso(id, proc, "tapas", TAPA_PASOS[tipoTapa] || [], "Proceso de tapas completo")}
+            <label class="chico2" style="display:flex;align-items:center;gap:7px;padding:9px 14px">
+              <input type="checkbox" style="width:auto" ${tapasDistintas ? "checked" : ""}
+                onchange="setTapasDistintas(${id}, this.checked)">
+              Las dos tapas son de distinto tipo (cada extremo con su descuento y su proceso)
+            </label>
+            ${tapasDistintas
+              ? `<div class="campo" style="border-right:none">
+                   <label class="et">Tipo de Tapa 1</label>
+                   <select onchange="setTapaTipo(${id}, this.value, 1)">
+                     ${TAPA_TIPOS.map(([v, t]) => `<option value="${v}" ${v === tipoTapa ? "selected" : ""}>${t}</option>`).join("")}
+                   </select></div>
+                 ${panelProceso(id, proc, "tapas", TAPA_PASOS[tipoTapa] || [], "Proceso de Tapa 1 completo")}
+                 <div class="campo" style="border-right:none;margin-top:10px">
+                   <label class="et">Tipo de Tapa 2</label>
+                   <select onchange="setTapaTipo(${id}, this.value, 2)">
+                     ${TAPA_TIPOS.map(([v, t]) => `<option value="${v}" ${v === tipoTapa2 ? "selected" : ""}>${t}</option>`).join("")}
+                   </select></div>
+                 ${panelProceso(id, proc, "tapas_2", TAPA_PASOS[tipoTapa2] || [], "Proceso de Tapa 2 completo")}`
+              : `<div class="campo" style="border-right:none">
+                   <label class="et">Tipo de tapa (ambas)</label>
+                   <select onchange="setTapaTipo(${id}, this.value, 1)">
+                     ${TAPA_TIPOS.map(([v, t]) => `<option value="${v}" ${v === tipoTapa ? "selected" : ""}>${t}</option>`).join("")}
+                   </select>
+                   <div class="nota">${val("tapa_tipo") || proc._tapa_tipo
+                     ? "Elegido a mano." : "Sugerido por el texto de la tapa — cambialo si no corresponde."}</div></div>
+                 ${panelProceso(id, proc, "tapas", TAPA_PASOS[tipoTapa] || [], "Proceso de tapas completo")}`}
+          </div>
+        </div>
+
+        <!-- SELLOS -->
+        <div class="lpanel" id="lp-sellos" ${tabLinea === "sellos" ? "" : 'style="display:none"'}>
+          <div class="card"><h3>Sellos</h3>
+            <table><thead><tr><th>Posición</th><th>Sello / junta — se lee del plano</th></tr></thead>
+              <tbody>
+                ${[["sello", "Superior"], ["sello_2", "Inferior"]].map(([k, pos]) => `<tr>
+                  <td style="width:1%;vertical-align:top"><b>${pos}</b></td>
+                  <td>${editando
+                    ? `<input style="width:100%" value="${esc(val(k) ?? "")}"
+                         placeholder="O'ring 2-XXX material · Junta ØXX material · (vacío = no requiere)"
+                         onchange="edicion['${k}']=this.value">`
+                    : (val(k)
+                        ? `<span class="chico2">${esc(val(k))}</span>`
+                        : `<span style="color:var(--gris);font-style:italic">no requiere</span>`)}</td>
+                </tr>`).join("")}
+              </tbody></table>
+            <h3 style="border-radius:0">Proceso de sellos</h3>
+            ${panelProceso(id, proc, "sellos", PASOS_SELLO, "Proceso de sellos terminado")}
+          </div>
+        </div>
+
+        <!-- OTROS -->
+        <div class="lpanel" id="lp-otros" ${tabLinea === "otros" ? "" : 'style="display:none"'}>
+          <div class="card"><h3>Otros</h3>
+            <div class="nota" style="margin-bottom:8px">Lo que no entra en las otras pestañas: resorte, refuerzos internos, flejes, etc.</div>
+            ${rol === "ingenieria"
+              ? `<textarea style="width:100%;min-height:90px;background:var(--chip,#1c2a3a);border:1px solid var(--chip-brd,#2b3b50);border-radius:8px;color:var(--ink,#e6eef8);font-family:var(--f-body);font-size:14px;padding:8px 10px"
+                   placeholder="Resorte, refuerzos internos, flejes, etc."
+                   onchange="guardarDato(${id},'otros',this.value.trim()||null,'Otros — notas de la linea')">${esc(val("otros") ?? "")}</textarea>`
+              : `<div class="va">${val("otros") ? esc(val("otros")) : "—"}</div>`}
           </div>
         </div>
 
@@ -1650,6 +1873,8 @@ const PASOS_MEDIO = {
   plisado: [["stock","Stock"],["compra","Compra"],["plisado","Plisado"],["corte","Corte"]],
   rolado:  [["stock","Stock"],["compra","Compra"],["rolado","Rolado"]],
 };
+// Pasos del sello: Stock o Compra, y el proceso terminado.
+const PASOS_SELLO = [["stock","Stock"],["compra","Compra"]];
 function detectarTipoTapa(txt){
   const t = (txt || "").toLowerCase();
   if (/repuj/.test(t)) return "repujadas";
@@ -1665,9 +1890,14 @@ async function postProceso(id, proceso, completo){
     headers:{"Content-Type":"application/json"},
     body: JSON.stringify({proceso, completo, usuario: nombre})});
 }
-async function setTapaTipo(id, tipo){
+async function setTapaTipo(id, tipo, cual){
   await api(`/api/linea/${id}/tapa_tipo`, {method:"POST",
-    headers:{"Content-Type":"application/json"}, body: JSON.stringify({tipo})});
+    headers:{"Content-Type":"application/json"}, body: JSON.stringify({tipo, cual: cual || 1})});
+  verLineaOF(id);
+}
+async function setTapasDistintas(id, distintas){
+  await api(`/api/linea/${id}/tapas_distintas`, {method:"POST",
+    headers:{"Content-Type":"application/json"}, body: JSON.stringify({distintas})});
   verLineaOF(id);
 }
 
@@ -1677,6 +1907,15 @@ async function setRoladoSobre(id, mk, pref){
     headers:{"Content-Type":"application/json"},
     body: JSON.stringify({datos: {[mk + "_sobre"]: pref || null},
                           nota: "Estructura sobre la que se enrolla el medio"})});
+  verLineaOF(id);
+}
+
+/* Guarda un dato suelto de la línea al instante (clasificación de medio,
+   vueltas del rolado, etc.) y recarga para recalcular el desarrollo. */
+async function guardarDato(id, key, valor, nota){
+  await api(`/api/linea/${id}/datos`, {method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({datos: {[key]: valor}, nota: nota || "Corregido a mano en la orden"})});
   verLineaOF(id);
 }
 
@@ -1693,6 +1932,16 @@ function panelProceso(id, proc, base, pasos, etCompleto){
         : (notaPend ? `<div class="nota">${notaPend}</div>` : "")}</span></label>`;
   const pasosHtml = pasos.map(([sfx, et]) => {
     const done = proc[base + "_" + sfx];
+    // Stock y Compra son excluyentes: si una esta marcada, la otra se tacha y se bloquea
+    // (un item se tiene en stock O se compra, no las dos).
+    const tachado = (sfx === "stock" && proc[base + "_compra"]) ||
+                    (sfx === "compra" && proc[base + "_stock"]);
+    if (tachado) {
+      return `<div class="campo avance" style="opacity:.45">
+        <label class="chk chk-parte" style="cursor:not-allowed">
+          <input type="checkbox" disabled style="width:auto;transform:scale(1.3)">
+          <span><b style="text-decoration:line-through">${et}</b></span></label></div>`;
+    }
     return `<div class="campo avance ${done ? "ok" : ""}">${
       chk(done, "1.3", `marcarPasoGen(${id},'${base}','${suf}','${sfx}',this.checked)`, et, "")}</div>`;
   }).join("");
@@ -2216,13 +2465,22 @@ async function cargarEnProceso(){
   let items = [];
   try { items = await api("/api/en_proceso"); } catch(e){}
   const esIng = rol === "ingenieria";
-  const filas = items.length ? items.map(it => `
-    <div class="gp-card ${esIng ? "clic" : ""}" ${esIng ? `onclick="abrirEnProceso('${esc(it.carpeta)}')"` : ""}>
+  const filas = items.length ? items.map(it => {
+    const clic = esIng
+      ? (it.reedicion ? `onclick="reabrirParaEditar(${it.linea_id})"` : `onclick="abrirEnProceso('${esc(it.carpeta)}')"`)
+      : "";
+    const badge = it.reedicion
+      ? `<div class="gp-badge warn">${esIng ? "▶ seguir editando" : "en re-edición"}</div>`
+      : `<div class="gp-badge ${it.tiene_plano ? "ok" : ""}">${esIng ? "▶ armar la OF" : (it.tiene_plano ? "con plano" : "falta plano")}</div>`;
+    const sub = it.reedicion
+      ? `${esc(it.producto || "")} · ${esc(it.vendedor || "")} · entrega ${esc(it.fecha_entrega || "—")} · re-edición`
+      : `N° OC ${esc(it.oc_numero || "—")} · ${esc(it.vendedor || "")} · entrega ${esc(it.fecha_entrega || "—")} · ${esc(it.origen || "")}`;
+    return `<div class="gp-card ${esIng ? "clic" : ""}" ${clic}>
       <div class="spf">${esc(it.spf)}</div>
       <div><div class="cli">${esc(it.cliente || "—")}</div>
-        <div class="m">N° OC ${esc(it.oc_numero || "—")} · ${esc(it.vendedor || "")} · entrega ${esc(it.fecha_entrega || "—")} · ${esc(it.origen || "")}</div></div>
-      <div class="gp-badge ${it.tiene_plano ? "ok" : ""}">${esIng ? "▶ armar la OF" : (it.tiene_plano ? "con plano" : "falta plano")}</div>
-    </div>`).join("")
+        <div class="m">${sub}</div></div>
+      ${badge}
+    </div>`; }).join("")
     : `<div class="gp-empty">No hay OF en proceso. Llegan acá cuando Ingeniería marca "Aplica" en Ariana.</div>`;
   $("#pag-enproceso").innerHTML = `
     <h1 class="gp-h1">OF en proceso</h1>

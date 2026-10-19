@@ -7,6 +7,11 @@ datos/sistema_of.db
 datos/usuarios_gaspi.json
 datos/secret.key
 
+# mail notifications config — has the SMTP app password, never commit
+# (the .ejemplo template IS committed; the real notificaciones.json is not)
+datos/notificaciones.json
+datos/mail_pendientes.json
+
 # demo state rebuilt by seed_demo.py
 datos/en_proceso/
 
