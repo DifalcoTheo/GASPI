@@ -161,8 +161,9 @@ RX_HP_ENTERA = re.compile(r"\bhp\s*[:=]\s*\d+(?:[.,]\d+)?\s*(?:mm)?", re.I)
 RX_PERFORACION = re.compile(r"Ø\s*(\d+(?:[.,]\d+)?)", re.I)
 RX_ESPESOR = re.compile(r"esp(?:esor)?\.?\s*:?\s*(\d+(?:[.,]\d+)?)", re.I)
 RX_KGM2 = re.compile(r"(\d+(?:[.,]\d+)?)\s*kg\s*/?\s*m\s*2", re.I)
-# El Ø a veces viene escrito con una O mayuscula
-RX_MOLDE = re.compile(r"molde\s*[ØO]?\s*(\d+(?:[.,]\d+)?)", re.I)
+# El Ø a veces viene con una O mayuscula, y el molde puede venir con dos puntos
+# o igual: "Molde Ø37", "Molde: Ø37", "Molde=37".
+RX_MOLDE = re.compile(r"molde\s*[:=]?\s*[ØO]?\s*(\d+(?:[.,]\d+)?)", re.I)
 RX_SIN_MOLDE = re.compile(r"sin\s+molde", re.I)
 RX_MATERIAL = re.compile(
     r"\b(AISI\s*\d+|SAE\s*\d+|acero\s+\w+|electrocincad\w+|galvanizad\w+|"
@@ -252,9 +253,17 @@ def _pieza_desde_nota(texto, reg):
     d["conformado"] = reg.canonico("conformado", texto)
     d["tipo_chapa"] = reg.canonico("tipo_chapa", texto)
 
-    for clave, rx in (("perforacion", RX_PERFORACION), ("espesor", RX_ESPESOR),
-                      ("kg_m2", RX_KGM2), ("molde", RX_MOLDE)):
-        m = rx.search(texto)
+    # El molde se saca PRIMERO y se quita del texto: asi su Ø (ej. "Molde: Ø37")
+    # no se confunde con la perforacion, que es otro Ø (ej. "perforado Ø5").
+    texto_perf = texto
+    mm = RX_MOLDE.search(texto)
+    if mm:
+        d["molde"] = float(mm.group(1).replace(",", "."))
+        texto_perf = texto[:mm.start()] + " " + texto[mm.end():]
+    for clave, rx, src in (("perforacion", RX_PERFORACION, texto_perf),
+                           ("espesor", RX_ESPESOR, texto),
+                           ("kg_m2", RX_KGM2, texto)):
+        m = rx.search(src)
         if m:
             d[clave] = float(m.group(1).replace(",", "."))
 

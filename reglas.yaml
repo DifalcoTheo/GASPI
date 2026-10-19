@@ -309,9 +309,14 @@ sinonimos:
     espiralado:
       - espiralado
       - espiralada
+      - espiraldao
+      - espiralda
+      - espiraldo
     rolado:
       - rolado
       - rolada
+      - rolaldo
+      - rrolado
 
   # --- Tipo de tapa: define cuanto se le descuenta a las estructuras --------
   tipo_tapa:
