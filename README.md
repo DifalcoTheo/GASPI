@@ -91,6 +91,13 @@ flowchart LR
 
 ## Run the demo (no drawings, no real data)
 
+**Windows, one click:** download the repo (Code → Download ZIP), unzip it and
+double-click **`DEMO.bat`**. The first run creates an isolated environment,
+installs the dependencies and builds the demo data; then it opens the browser.
+Only requirement: Python 3.10+ installed.
+
+Or manually:
+
 ```bash
 pip install -r requirements.txt
 python seed_demo.py      # builds datos/sistema_of.db from the fictional sample data
