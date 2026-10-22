@@ -1,5 +1,11 @@
 # GASPI — Manufacturing orders & a data-driven engineering rules engine
 
+![GASPI — panel principal](docs/gaspi.jpg)
+
+> The home view: GASPI at the center, with manufacturing orders in process,
+> active and finished, plus internal purchasing requests.
+> Built with Python · FastAPI · SQLite · a YAML-driven rules engine.
+
 **GASPI** is the manufacturing side of a small production-engineering system I
 built for the technical office of an industrial **filtration** company. It turns
 a technical drawing (PDF) into a structured, calculated manufacturing order —
